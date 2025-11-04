@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8" />
-  <title>Closest Locations Finder</title>
+  <title>Closest Locations Finder 1</title>
   <style>
     body { font-family: Arial; margin: 40px; }
     input { padding: 10px; width: 300px; }
@@ -32,7 +32,7 @@
       output.innerHTML = "Calculating...";
 
       // Local backend URL (update to deployed backend when live)
-      const backendUrl = "http://127.0.0.1:5000/find-closest";
+      const backendUrl = "https://closest-dealer-api.onrender.com";
 
       try {
         const response = await fetch(backendUrl, {
