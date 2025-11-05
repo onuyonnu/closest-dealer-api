@@ -1,141 +1,111 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
 import pandas as pd
-import requests
-from geopy.distance import geodesic
+import openrouteservice
+from geopy.geocoders import Nominatim
+from flask_cors import CORS
+from dotenv import load_dotenv
 import os
+import math
 
-app = Flask(__name__)
-CORS(app)
-
-# === Load API key and Excel data ===
+# --- Load environment variables ---
+load_dotenv()
 ORS_API_KEY = os.getenv("ORS_API_KEY")
+if not ORS_API_KEY:
+    raise EnvironmentError("ORS_API_KEY not found in environment variables or .env file")
 
+# --- Flask setup ---
+app = Flask(__name__)
+CORS(app)  # allow frontend calls
+
+# --- ORS client ---
+client = openrouteservice.Client(key=ORS_API_KEY)
+
+# --- Load Excel file ---
 EXCEL_FILE = "locations_with_coords.xlsx"
-if not os.path.exists(EXCEL_FILE):
+try:
+    df = pd.read_excel(EXCEL_FILE)
+except FileNotFoundError:
     raise FileNotFoundError(f"{EXCEL_FILE} not found in backend folder.")
 
-# Load once at startup
-df = pd.read_excel(EXCEL_FILE)
+# --- Ensure necessary columns exist ---
+required_cols = ["Name", "Latitude", "Longitude"]
+for col in required_cols:
+    if col not in df.columns:
+        raise ValueError(f"{col} column missing in {EXCEL_FILE}")
 
-# === Health endpoint ===
-@app.route("/health", methods=["GET"])
-def health():
-    num_records = len(df)
-    return jsonify({"status": "ok", "records_loaded": num_records})
+# Add Phone column if missing
+if "Phone" not in df.columns:
+    df["Phone"] = ""
 
-# === Autocomplete endpoint (back-end handled) ===
-@app.route("/autocomplete", methods=["GET"])
-def autocomplete():
-    query = request.args.get("q", "")
-    if len(query) < 3:
-        return jsonify({"suggestions": []})
+# --- Haversine function for approximate distance ---
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371  # Earth radius in km
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    a = math.sin(delta_phi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(delta_lambda/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
 
-    url = "https://api.openrouteservice.org/geocode/autocomplete"
-    params = {
-        "api_key": ORS_API_KEY,
-        "text": query
-    }
+# --- Routes ---
+@app.route("/")
+def home():
+    return {"message": "Drive Time Locator API is running"}
 
-    try:
-        res = requests.get(url, params=params)
-        data = res.json()
-        suggestions = [f["properties"]["label"] for f in data.get("features", [])]
-        return jsonify({"suggestions": suggestions})
-    except Exception as e:
-        print("Autocomplete error:", e)
-        return jsonify({"suggestions": []}), 500
-
-# === Find Closest endpoint ===
 @app.route("/find-closest", methods=["POST"])
 def find_closest():
-    try:
-        address = request.json.get("address")
-        if not address:
-            return jsonify({"error": "Address is required"}), 400
+    data = request.get_json()
+    user_address = data.get("address")
 
-        # Geocode the input address
-        geo_url = "https://api.openrouteservice.org/geocode/search"
-        geo_params = {"api_key": ORS_API_KEY, "text": address}
-        geo_res = requests.get(geo_url, params=geo_params)
-        geo_data = geo_res.json()
+    if not user_address:
+        return jsonify({"error": "No address provided"}), 400
 
-        features = geo_data.get("features")
-        if not features:
-            return jsonify({"error": "Address not found"}), 404
+    # Geocode user address
+    geolocator = Nominatim(user_agent="geoapi")
+    location = geolocator.geocode(user_address)
+    if not location:
+        return jsonify({"error": "Address not found"}), 400
 
-        lat = features[0]["geometry"]["coordinates"][1]
-        lon = features[0]["geometry"]["coordinates"][0]
+    user_lat, user_lon = location.latitude, location.longitude
 
-        # Calculate straight-line distance for all locations
-        df["straight_dist_km"] = df.apply(
-            lambda row: geodesic((lat, lon), (row["Latitude"], row["Longitude"])).km
-            if pd.notna(row["Latitude"]) and pd.notna(row["Longitude"]) else float("inf"),
-            axis=1
-        )
+    # Step 1: approximate distances
+    df["approx_distance"] = df.apply(
+        lambda row: haversine(user_lat, user_lon, row["Latitude"], row["Longitude"]), axis=1
+    )
 
-        # Pre-filter top 20 nearest by straight-line distance
-        nearby_df = df.nsmallest(20, "straight_dist_km")
+    # Step 2: select top 10 nearest candidates
+    candidates = df.sort_values("approx_distance").head(10)
 
-        results = []
-        for _, row in nearby_df.iterrows():
-            # Skip if coordinates are missing/invalid or too far
-            if pd.isna(row["Latitude"]) or pd.isna(row["Longitude"]):
-                print(f"Skipping {row['Name']} — missing coordinates.")
-                continue
-            if row["straight_dist_km"] > 5000:
-                print(f"Skipping {row['Name']} — too far ({row['straight_dist_km']:.1f} km).")
-                continue
+    results = []
+    for _, row in candidates.iterrows():
+        dest_coords = (row["Longitude"], row["Latitude"])
+        try:
+            route = client.directions(
+                coordinates=[(user_lon, user_lat), dest_coords],
+                profile="driving-car",
+                format="geojson"
+            )
+            duration = route["features"][0]["properties"]["summary"]["duration"] / 60  # min
+            distance = route["features"][0]["properties"]["summary"]["distance"] / 1000  # km
 
-            coords = [
-                [lon, lat],
-                [row["Longitude"], row["Latitude"]]
-            ]
+            results.append({
+                "name": row["Name"],
+                "phone": row.get("Phone", ""),
+                "drive_time": round(duration, 1),
+                "distance_km": round(distance, 2)
+            })
+        except Exception as e:
+            print(f"Error getting route for {row['Name']}: {e}")
 
-            # Ensure all coordinates are finite numbers
-            if not all(map(lambda v: isinstance(v, (int, float)) and pd.notna(v), [lon, lat, row["Longitude"], row["Latitude"]])):
-                print(f"Skipping {row['Name']} — invalid coordinate values.")
-                continue
+    # Step 3: sort by actual drive time
+    results.sort(key=lambda x: x["drive_time"])
 
-            route_url = "https://api.openrouteservice.org/v2/directions/driving-car"
-            headers = {"Authorization": ORS_API_KEY, "Content-Type": "application/json"}
-            body = {"coordinates": coords}
+    # Step 4: return top 5
+    return jsonify(results[:5])
 
-            try:
-                r = requests.post(route_url, json=body, headers=headers)
-                r_data = r.json()
-
-                if "routes" not in r_data:
-                    print(f"Skipping {row['Name']} — route not found.")
-                    continue
-
-                route = r_data["routes"][0]
-                distance_km = route["summary"]["distance"] / 1000
-                duration_min = route["summary"]["duration"] / 60
-
-                results.append({
-                    "name": row["Name"],
-                    "phone": row["Phone"],
-                    "distance": round(distance_km, 1),
-                    "duration": round(duration_min, 1)
-                })
-
-            except Exception as e:
-                print(f"Error getting route for {row['Name']}: {e}")
-
-        # Sort by travel time and return top 5
-        results = sorted(results, key=lambda x: x["duration"])[:5]
-
-        return jsonify(results)
-
-    except Exception as e:
-        print("Server error:", e)
-        return jsonify({"error": "Server error"}), 500
-
-# === Root endpoint ===
-@app.route("/", methods=["GET"])
-def root():
-    return jsonify({"status": "OK", "message": "Drive Time Locator backend is running."})
+# --- Run ---
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
 
 
 if __name__ == "__main__":
