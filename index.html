@@ -4,10 +4,30 @@
   <meta charset="UTF-8" />
   <title>Closest Locations Finder</title>
   <style>
-    body { font-family: Arial; margin: 40px; }
+    body { font-family: Arial, sans-serif; margin: 40px; }
     input { padding: 10px; width: 300px; }
     button { padding: 10px; margin-left: 10px; cursor: pointer; }
-    .results { margin-top: 20px; }
+    ul.suggestions {
+      list-style-type: none;
+      padding: 0;
+      margin: 5px 0 0 0;
+      width: 320px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background: #fff;
+      position: absolute;
+      z-index: 1000;
+      max-height: 150px;
+      overflow-y: auto;
+    }
+    ul.suggestions li {
+      padding: 8px;
+      cursor: pointer;
+    }
+    ul.suggestions li:hover {
+      background: #f0f0f0;
+    }
+    .results { margin-top: 30px; }
     .location-card {
       border: 1px solid #ccc;
       padding: 15px;
@@ -20,24 +40,75 @@
 </head>
 <body>
   <h2>Find closest locations by drive time</h2>
-  <input type="text" id="address" placeholder="Enter address or ZIP code">
+
+  <div style="position: relative;">
+    <input type="text" id="address" placeholder="Enter U.S. address or ZIP code" autocomplete="off">
+    <ul id="suggestions" class="suggestions" style="display:none;"></ul>
+  </div>
   <button onclick="findClosest()">Search</button>
 
   <div id="output" class="results"></div>
 
   <script>
+    const backendBase = "https://closest-dealer-api.onrender.com"; // 
+    const input = document.getElementById("address");
+    const suggestionsList = document.getElementById("suggestions");
+    const output = document.getElementById("output");
+
+    // --- Autocomplete with debounce ---
+    let timeoutId;
+    input.addEventListener("input", () => {
+      clearTimeout(timeoutId);
+      const query = input.value.trim();
+      if (!query) {
+        suggestionsList.style.display = "none";
+        return;
+      }
+      timeoutId = setTimeout(() => fetchSuggestions(query), 600); // debounce 0.6s
+    });
+
+    async function fetchSuggestions(query) {
+      try {
+        const res = await fetch(`${backendBase}/autocomplete?q=${encodeURIComponent(query)}`);
+        const data = await res.json();
+        showSuggestions(data);
+      } catch (err) {
+        console.error("Autocomplete error:", err);
+      }
+    }
+
+    function showSuggestions(list) {
+      suggestionsList.innerHTML = "";
+      if (!list || list.length === 0) {
+        suggestionsList.style.display = "none";
+        return;
+      }
+      list.forEach(item => {
+        const li = document.createElement("li");
+        li.textContent = item;
+        li.onclick = () => {
+          input.value = item;
+          suggestionsList.style.display = "none";
+        };
+        suggestionsList.appendChild(li);
+      });
+      suggestionsList.style.display = "block";
+    }
+
+    // --- Find closest locations ---
     async function findClosest() {
-      const addr = document.getElementById('address').value;
-      const output = document.getElementById('output');
+      const addr = input.value.trim();
+      if (!addr) {
+        output.innerHTML = "Please enter an address.";
+        return;
+      }
+      suggestionsList.style.display = "none";
       output.innerHTML = "Calculating...";
 
-      // Local backend URL (update to deployed backend when live)
-      const backendUrl = "https://closest-dealer-api.onrender.com/find-closest";
-
       try {
-        const response = await fetch(backendUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const response = await fetch(`${backendBase}/find-closest`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ address: addr })
         });
 
@@ -47,25 +118,31 @@
         }
 
         const data = await response.json();
-
-        if (data.length === 0) {
+        if (!data || data.length === 0) {
           output.innerHTML = "No nearby locations found.";
           return;
         }
 
-        output.innerHTML = data.map(r =>
-          `<div class="location-card">
+        output.innerHTML = data.map(r => `
+          <div class="location-card">
             <b>${r.name}</b><br>
             Phone: ${r.phone}<br>
             Drive time: ${r.drive_time} min (${r.distance_km} km)
-          </div>`
-        ).join('');
+          </div>
+        `).join("");
 
       } catch (err) {
         output.innerHTML = "Error: could not connect to backend.";
         console.error(err);
       }
     }
+
+    // --- Hide suggestions when clicking outside ---
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest("#address")) {
+        suggestionsList.style.display = "none";
+      }
+    });
   </script>
 </body>
 </html>

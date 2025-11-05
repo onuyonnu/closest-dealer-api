@@ -6,6 +6,8 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 import os
 import math
+import time
+import threading
 
 # --- Load environment variables ---
 load_dotenv()
@@ -15,7 +17,7 @@ if not ORS_API_KEY:
 
 # --- Flask setup ---
 app = Flask(__name__)
-CORS(app)  # allow frontend calls
+CORS(app)
 
 # --- ORS client ---
 client = openrouteservice.Client(key=ORS_API_KEY)
@@ -27,19 +29,17 @@ try:
 except FileNotFoundError:
     raise FileNotFoundError(f"{EXCEL_FILE} not found in backend folder.")
 
-# --- Ensure necessary columns exist ---
 required_cols = ["Name", "Latitude", "Longitude"]
 for col in required_cols:
     if col not in df.columns:
         raise ValueError(f"{col} column missing in {EXCEL_FILE}")
 
-# Add Phone column if missing
 if "Phone" not in df.columns:
     df["Phone"] = ""
 
-# --- Haversine function for approximate distance ---
+# --- Haversine ---
 def haversine(lat1, lon1, lat2, lon2):
-    R = 6371  # Earth radius in km
+    R = 6371
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     delta_phi = math.radians(lat2 - lat1)
     delta_lambda = math.radians(lon2 - lon1)
@@ -47,10 +47,39 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
+# --- Thread lock for Nominatim throttling ---
+geocode_lock = threading.Lock()
+last_geocode_time = 0
+
+def safe_geocode(geolocator, query, retries=3, delay=1.0):
+    """Safe geocoding with throttling, retries, and backoff."""
+    global last_geocode_time
+
+    for attempt in range(retries):
+        try:
+            with geocode_lock:
+                elapsed = time.time() - last_geocode_time
+                if elapsed < 1.0:
+                    time.sleep(1.0 - elapsed)
+                location = geolocator.geocode(
+                    query,
+                    country_codes="us",
+                    timeout=10
+                )
+                last_geocode_time = time.time()
+            if location:
+                return location
+        except Exception as e:
+            print(f"Geocode attempt {attempt+1} failed for {query}: {e}")
+            time.sleep(delay * (attempt + 1))  # exponential backoff
+    return None
+
+
 # --- Routes ---
 @app.route("/")
 def home():
     return {"message": "Drive Time Locator API is running"}
+
 
 @app.route("/find-closest", methods=["POST"])
 def find_closest():
@@ -60,11 +89,12 @@ def find_closest():
     if not user_address:
         return jsonify({"error": "No address provided"}), 400
 
-    # Geocode user address
     geolocator = Nominatim(user_agent="geoapi")
-    location = geolocator.geocode(user_address)
+
+    # safer throttled geocoding
+    location = safe_geocode(geolocator, user_address)
     if not location:
-        return jsonify({"error": "Address not found"}), 400
+        return jsonify({"error": "Address not found or geocoding service unavailable"}), 400
 
     user_lat, user_lon = location.latitude, location.longitude
 
@@ -73,20 +103,26 @@ def find_closest():
         lambda row: haversine(user_lat, user_lon, row["Latitude"], row["Longitude"]), axis=1
     )
 
-    # Step 2: select top 10 nearest candidates
+    # Step 2: top 10 nearest candidates
     candidates = df.sort_values("approx_distance").head(10)
 
     results = []
     for _, row in candidates.iterrows():
         dest_coords = (row["Longitude"], row["Latitude"])
         try:
+            # perform routing call with a short safety timeout via ORS internal client
+            start_time = time.time()
             route = client.directions(
                 coordinates=[(user_lon, user_lat), dest_coords],
                 profile="driving-car",
                 format="geojson"
             )
-            duration = route["features"][0]["properties"]["summary"]["duration"] / 60  # min
-            distance = route["features"][0]["properties"]["summary"]["distance"] / 1000  # km
+            # enforce manual timeout safeguard (10s max)
+            if time.time() - start_time > 10:
+                raise TimeoutError("ORS request exceeded 10 seconds")
+
+            duration = route["features"][0]["properties"]["summary"]["duration"] / 60
+            distance = route["features"][0]["properties"]["summary"]["distance"] / 1000
 
             results.append({
                 "name": row["Name"],
@@ -96,19 +132,50 @@ def find_closest():
             })
         except Exception as e:
             print(f"Error getting route for {row['Name']}: {e}")
+            # fallback: approximate drive time (80 km/h)
+            fallback_time = row["approx_distance"] / 80 * 60
+            results.append({
+                "name": row["Name"],
+                "phone": row.get("Phone", ""),
+                "drive_time": round(fallback_time, 1),
+                "distance_km": round(row["approx_distance"], 2)
+            })
 
-    # Step 3: sort by actual drive time
     results.sort(key=lambda x: x["drive_time"])
-
-    # Step 4: return top 5
     return jsonify(results[:5])
 
-# --- Run ---
+
+@app.route("/autocomplete", methods=["GET"])
+def autocomplete():
+    query = request.args.get("q", "")
+    if not query:
+        return jsonify([])
+
+    geolocator = Nominatim(user_agent="geoapi")
+    suggestions = []
+
+    try:
+        with geocode_lock:
+            elapsed = time.time() - last_geocode_time
+            if elapsed < 1.0:
+                time.sleep(1.0 - elapsed)
+            locations = geolocator.geocode(
+                query,
+                country_codes="us",
+                exactly_one=False,
+                limit=5,
+                timeout=10
+            )
+    except Exception as e:
+        print(f"Autocomplete error: {e}")
+        return jsonify([])
+
+    if locations:
+        suggestions = [loc.address for loc in locations]
+
+    return jsonify(suggestions)
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
-
 
