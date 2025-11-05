@@ -1,104 +1,109 @@
-import os
-import pandas as pd
-import requests
 from flask import Flask, request, jsonify
+import pandas as pd
+import openrouteservice
+from geopy.geocoders import Nominatim
 from flask_cors import CORS
 from dotenv import load_dotenv
+import os
+import math
 
-# Load environment variables (for ORS API key)
+# --- Load environment variables ---
 load_dotenv()
+ORS_API_KEY = os.getenv("ORS_API_KEY")
+if not ORS_API_KEY:
+    raise EnvironmentError("ORS_API_KEY not found in environment variables or .env file")
 
+# --- Flask setup ---
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # allow frontend calls
 
-# Get the absolute path of the backend folder
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-EXCEL_FILE = os.path.join(BASE_DIR, "locations_with_coords.xlsx")
+# --- ORS client ---
+client = openrouteservice.Client(key=ORS_API_KEY)
 
-# Load Excel data safely
+# --- Load Excel file ---
+EXCEL_FILE = "locations_with_coords.xlsx"
 try:
     df = pd.read_excel(EXCEL_FILE)
 except FileNotFoundError:
     raise FileNotFoundError(f"{EXCEL_FILE} not found in backend folder.")
 
-# Verify expected columns exist
-expected_cols = {"Name", "Phone", "Address", "Latitude", "Longitude"}
-if not expected_cols.issubset(df.columns):
-    raise ValueError(f"Excel file missing one of these columns: {expected_cols}")
+# --- Ensure necessary columns exist ---
+required_cols = ["Name", "Latitude", "Longitude"]
+for col in required_cols:
+    if col not in df.columns:
+        raise ValueError(f"{col} column missing in {EXCEL_FILE}")
 
-# OpenRouteService API key
-ORS_API_KEY = os.getenv("ORS_API_KEY")
-if not ORS_API_KEY:
-    raise ValueError("Missing ORS_API_KEY environment variable.")
+# Add Phone column if missing
+if "Phone" not in df.columns:
+    df["Phone"] = ""
 
-@app.route("/", methods=["GET"])
+# --- Haversine function for approximate distance ---
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371  # Earth radius in km
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    a = math.sin(delta_phi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(delta_lambda/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+# --- Routes ---
+@app.route("/")
 def home():
-    return jsonify({"message": "Backend is running."}), 200
+    return {"message": "Drive Time Locator API is running"}
 
-
-@app.route("/find-closest", methods=["POST", "GET"])
+@app.route("/find-closest", methods=["POST"])
 def find_closest():
-    # Handle both GET (for testing) and POST (for frontend)
-    if request.method == "POST":
-        data = request.get_json()
-        address = data.get("address")
-    else:
-        address = request.args.get("address")
+    data = request.get_json()
+    user_address = data.get("address")
 
-    if not address:
-        return jsonify({"error": "Address not provided"}), 400
+    if not user_address:
+        return jsonify({"error": "No address provided"}), 400
 
-    # Geocode user-provided address
-    try:
-        geo_url = "https://api.openrouteservice.org/geocode/search"
-        geo_params = {"api_key": ORS_API_KEY, "text": address}
-        geo_res = requests.get(geo_url, params=geo_params)
-        geo_data = geo_res.json()
+    # Geocode user address
+    geolocator = Nominatim(user_agent="geoapi")
+    location = geolocator.geocode(user_address)
+    if not location:
+        return jsonify({"error": "Address not found"}), 400
 
-        coords = geo_data["features"][0]["geometry"]["coordinates"]
-        user_lon, user_lat = coords
-    except Exception as e:
-        print("Geocoding error:", e)
-        return jsonify({"error": "Could not find address or backend issue."}), 500
+    user_lat, user_lon = location.latitude, location.longitude
 
-    # Compute driving distance to each location
+    # Step 1: approximate distances
+    df["approx_distance"] = df.apply(
+        lambda row: haversine(user_lat, user_lon, row["Latitude"], row["Longitude"]), axis=1
+    )
+
+    # Step 2: select top 10 nearest candidates
+    candidates = df.sort_values("approx_distance").head(10)
+
     results = []
-    for _, row in df.iterrows():
+    for _, row in candidates.iterrows():
+        dest_coords = (row["Longitude"], row["Latitude"])
         try:
-            route_url = "https://api.openrouteservice.org/v2/directions/driving-car"
-            body = {
-                "coordinates": [
-                    [user_lon, user_lat],
-                    [row["Longitude"], row["Latitude"]],
-                ]
-            }
-            headers = {"Authorization": ORS_API_KEY, "Content-Type": "application/json"}
-            route_res = requests.post(route_url, json=body, headers=headers)
-            route_data = route_res.json()
-
-            meters = route_data["routes"][0]["summary"]["distance"]
-            seconds = route_data["routes"][0]["summary"]["duration"]
+            route = client.directions(
+                coordinates=[(user_lon, user_lat), dest_coords],
+                profile="driving-car",
+                format="geojson"
+            )
+            duration = route["features"][0]["properties"]["summary"]["duration"] / 60  # min
+            distance = route["features"][0]["properties"]["summary"]["distance"] / 1000  # km
 
             results.append({
-                "Name": row["Name"],
-                "Phone": row["Phone"],
-                "Address": row["Address"],
-                "Distance_km": round(meters / 1000, 2),
-                "Drive_time_min": round(seconds / 60, 1)
+                "name": row["Name"],
+                "phone": row.get("Phone", ""),
+                "drive_time": round(duration, 1),
+                "distance_km": round(distance, 2)
             })
         except Exception as e:
-            print(f"Error computing route for {row['Name']}: {e}")
-            continue
+            print(f"Error getting route for {row['Name']}: {e}")
 
-    if not results:
-        return jsonify({"error": "No valid results found."}), 500
+    # Step 3: sort by actual drive time
+    results.sort(key=lambda x: x["drive_time"])
 
-    # Sort by shortest drive time
-    results.sort(key=lambda x: x["Drive_time_min"])
-    top5 = results[:5]
+    # Step 4: return top 5
+    return jsonify(results[:5])
 
-    return jsonify(top5), 200
-
-
+# --- Run ---
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000, debug=True)
+
