@@ -18,6 +18,12 @@ if not os.path.exists(EXCEL_FILE):
 # Load once at startup
 df = pd.read_excel(EXCEL_FILE)
 
+# === Health endpoint ===
+@app.route("/health", methods=["GET"])
+def health():
+    num_records = len(df)
+    return jsonify({"status": "ok", "records_loaded": num_records})
+
 # === Autocomplete endpoint (back-end handled) ===
 @app.route("/autocomplete", methods=["GET"])
 def autocomplete():
@@ -63,7 +69,8 @@ def find_closest():
 
         # Calculate straight-line distance for all locations
         df["straight_dist_km"] = df.apply(
-            lambda row: geodesic((lat, lon), (row["Latitude"], row["Longitude"])).km,
+            lambda row: geodesic((lat, lon), (row["Latitude"], row["Longitude"])).km
+            if pd.notna(row["Latitude"]) and pd.notna(row["Longitude"]) else float("inf"),
             axis=1
         )
 
@@ -72,14 +79,23 @@ def find_closest():
 
         results = []
         for _, row in nearby_df.iterrows():
+            # Skip if coordinates are missing/invalid or too far
+            if pd.isna(row["Latitude"]) or pd.isna(row["Longitude"]):
+                print(f"Skipping {row['Name']} — missing coordinates.")
+                continue
             if row["straight_dist_km"] > 5000:
-                # Skip if more than 5000 km away (reduces invalid ORS calls)
+                print(f"Skipping {row['Name']} — too far ({row['straight_dist_km']:.1f} km).")
                 continue
 
             coords = [
                 [lon, lat],
                 [row["Longitude"], row["Latitude"]]
             ]
+
+            # Ensure all coordinates are finite numbers
+            if not all(map(lambda v: isinstance(v, (int, float)) and pd.notna(v), [lon, lat, row["Longitude"], row["Latitude"]])):
+                print(f"Skipping {row['Name']} — invalid coordinate values.")
+                continue
 
             route_url = "https://api.openrouteservice.org/v2/directions/driving-car"
             headers = {"Authorization": ORS_API_KEY, "Content-Type": "application/json"}
@@ -116,7 +132,7 @@ def find_closest():
         print("Server error:", e)
         return jsonify({"error": "Server error"}), 500
 
-
+# === Root endpoint ===
 @app.route("/", methods=["GET"])
 def root():
     return jsonify({"status": "OK", "message": "Drive Time Locator backend is running."})
@@ -124,4 +140,5 @@ def root():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
