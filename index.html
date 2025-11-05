@@ -51,6 +51,15 @@
   <script>
     const backendUrl = "https://closest-dealer-api.onrender.com";
 
+    function kmToMiles(km) {
+      return (km * 0.621371).toFixed(2);
+    }
+
+    function minsToHours(mins) {
+      const hrs = mins / 60;
+      return hrs.toFixed(2);
+    }
+
     async function fetchAutocomplete(query) {
       if (!query || query.length < 3) return;
       try {
@@ -92,13 +101,15 @@
           return;
         }
 
-        output.innerHTML = data.map(r =>
-          `<div class="location-card">
-            <b>${r.name}</b><br>
-            Phone: ${r.phone || 'N/A'}<br>
-            Drive time: ${r.drive_time} min (${r.distance_km} km)
-          </div>`
-        ).join('');
+        output.innerHTML = data.map(r => {
+          const distanceMiles = kmToMiles(r.distance_km);
+          const timeHours = minsToHours(r.drive_time);
+          return `<div class="location-card">
+                    <b>${r.name}</b><br>
+                    Phone: ${r.phone || 'N/A'}<br>
+                    Drive time: ${timeHours} hrs (${distanceMiles} mi)
+                  </div>`;
+        }).join('');
 
       } catch (err) {
         output.innerHTML = "Error: could not connect to backend.";
@@ -106,8 +117,6 @@
       }
     }
 
-    // Auto-complete listener
-    
     document.getElementById('address').addEventListener('input', e => {
       fetchAutocomplete(e.target.value);
     });
