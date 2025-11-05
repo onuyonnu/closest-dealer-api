@@ -1,72 +1,121 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Closest Locations Finder 1</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Closest Locations Finder</title>
   <style>
-    body { font-family: Arial; margin: 40px; }
-    input { padding: 10px; width: 300px; }
-    button { padding: 10px; margin-left: 10px; cursor: pointer; }
-    .results { margin-top: 20px; }
-    .location-card {
-      border: 1px solid #ccc;
-      padding: 15px;
-      margin-bottom: 10px;
-      border-radius: 8px;
-      background: #f9f9f9;
+    body {
+      font-family: Arial, sans-serif;
+      background: #f5f7fa;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
-    .location-card b { font-size: 1.1em; }
+
+    h1 {
+      margin-top: 40px;
+    }
+
+    input, button {
+      margin: 10px;
+      padding: 10px;
+      font-size: 16px;
+    }
+
+    #results {
+      margin-top: 20px;
+      width: 90%;
+      max-width: 600px;
+    }
+
+    .card {
+      background: white;
+      padding: 15px;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+      margin-bottom: 10px;
+    }
+
+    .card h3 {
+      margin: 0;
+      color: #333;
+    }
+
+    .card p {
+      margin: 5px 0;
+      color: #555;
+    }
+
+    #loading {
+      display: none;
+      color: #888;
+    }
   </style>
 </head>
 <body>
-  <h2>Find closest locations by drive time</h2>
-  <input type="text" id="address" placeholder="Enter ZIP code">
-  <button onclick="findClosest()">Search</button>
+  <h1>Find the Closest Locations</h1>
 
-  <div id="output" class="results"></div>
+  <input type="text" id="address" placeholder="Enter your address or postal code" />
+  <button id="searchBtn">Search</button>
+  <p id="loading">Searching nearby locations... please wait ⏱️</p>
+
+  <div id="results"></div>
 
   <script>
-    async function findClosest() {
-      const addr = document.getElementById('address').value;
-      const output = document.getElementById('output');
-      output.innerHTML = "Calculating...";
+    const backendUrl = "https://closest-dealer-api.onrender.com"; // ← update this to your Render backend URL
 
-      // Local backend URL (update to deployed backend when live)
-      const backendUrl = "https://closest-dealer-api.onrender.com";
+    document.getElementById("searchBtn").addEventListener("click", async () => {
+      const address = document.getElementById("address").value.trim();
+      const resultsDiv = document.getElementById("results");
+      const loading = document.getElementById("loading");
+
+      resultsDiv.innerHTML = "";
+      if (!address) {
+        resultsDiv.innerHTML = "<p>Please enter an address or postal code.</p>";
+        return;
+      }
+
+      loading.style.display = "block";
 
       try {
-        const response = await fetch(backendUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address: addr })
+        const res = await fetch(backendUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ address }),
         });
 
-        if (!response.ok) {
-          output.innerHTML = "Error: could not find address or backend issue.";
+        if (!res.ok) throw new Error("Backend error");
+
+        const data = await res.json();
+        loading.style.display = "none";
+
+        if (data.error) {
+          resultsDiv.innerHTML = `<p style="color:red">${data.error}</p>`;
           return;
         }
 
-        const data = await response.json();
-
-        if (data.length === 0) {
-          output.innerHTML = "No nearby locations found.";
-          return;
-        }
-
-        output.innerHTML = data.map(r =>
-          `<div class="location-card">
-            <b>${r.name}</b><br>
-            Phone: ${r.phone}<br>
-            Drive time: ${r.drive_time} min (${r.distance_km} km)
-          </div>`
-        ).join('');
-
+        resultsDiv.innerHTML = "";
+        data.forEach((item) => {
+          const card = document.createElement("div");
+          card.classList.add("card");
+          card.innerHTML = `
+            <h3>${item.Name}</h3>
+            <p><strong>📞 Phone:</strong> ${item.Phone || "N/A"}</p>
+            <p><strong>🕒 Drive time:</strong> ${item.Drive_time_min} min</p>
+            <p><strong>📍 Distance:</strong> ${item.Distance_km} km</p>
+            <p>${item.Address}</p>
+          `;
+          resultsDiv.appendChild(card);
+        });
       } catch (err) {
-        output.innerHTML = "Error: could not connect to backend.";
         console.error(err);
+        loading.style.display = "none";
+        resultsDiv.innerHTML = `<p style="color:red">Error: could not connect to backend.</p>`;
       }
-    }
+    });
   </script>
 </body>
 </html>
-
