@@ -4,30 +4,10 @@
   <meta charset="UTF-8" />
   <title>Closest Locations Finder</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 40px; }
+    body { font-family: Arial, sans-serif; margin: 40px; color: #222; }
     input { padding: 10px; width: 300px; }
     button { padding: 10px; margin-left: 10px; cursor: pointer; }
-    ul.suggestions {
-      list-style-type: none;
-      padding: 0;
-      margin: 5px 0 0 0;
-      width: 320px;
-      border: 1px solid #ccc;
-      border-radius: 4px;
-      background: #fff;
-      position: absolute;
-      z-index: 1000;
-      max-height: 150px;
-      overflow-y: auto;
-    }
-    ul.suggestions li {
-      padding: 8px;
-      cursor: pointer;
-    }
-    ul.suggestions li:hover {
-      background: #f0f0f0;
-    }
-    .results { margin-top: 30px; }
+    .results { margin-top: 20px; }
     .location-card {
       border: 1px solid #ccc;
       padding: 15px;
@@ -36,79 +16,68 @@
       background: #f9f9f9;
     }
     .location-card b { font-size: 1.1em; }
+    .faq {
+      margin-top: 40px;
+      padding: 20px;
+      background: #f1f1f1;
+      border-radius: 8px;
+      border-left: 5px solid #4CAF50;
+      max-width: 600px;
+    }
+    .faq h3 { margin-top: 0; }
   </style>
 </head>
 <body>
   <h2>Find closest locations by drive time</h2>
-
-  <div style="position: relative;">
-    <input type="text" id="address" placeholder="Enter U.S. address or ZIP code" autocomplete="off">
-    <ul id="suggestions" class="suggestions" style="display:none;"></ul>
-  </div>
+  <input type="text" id="address" placeholder="Enter address or ZIP code" list="autocomplete-list">
   <button onclick="findClosest()">Search</button>
+
+  <datalist id="autocomplete-list"></datalist>
 
   <div id="output" class="results"></div>
 
+  <div class="faq">
+    <h3>ℹ️ About this tool</h3>
+    <p><b>Created by:</b> Olivier</p>
+    <p>This tool helps you find the closest dealer locations by drive time.</p>
+    <ul>
+      <li>Auto-complete only works for <b>United States addresses</b>.</li>
+      <li><b>Hawaii</b> and <b>Puerto Rico</b> dealers are not currently included.</li>
+      <li>All geocoding and routing requests are made through free services — please be patient as responses may take a few seconds.</li>
+      <li>If results don’t appear immediately, try again in a few moments.</li>
+    </ul>
+  </div>
+
   <script>
-    const backendBase = "https://closest-dealer-api.onrender.com"; // 
-    const input = document.getElementById("address");
-    const suggestionsList = document.getElementById("suggestions");
-    const output = document.getElementById("output");
+    const backendUrl = "https://closest-dealer-api.onrender.com";
 
-    // --- Autocomplete with debounce ---
-    let timeoutId;
-    input.addEventListener("input", () => {
-      clearTimeout(timeoutId);
-      const query = input.value.trim();
-      if (!query) {
-        suggestionsList.style.display = "none";
-        return;
-      }
-      timeoutId = setTimeout(() => fetchSuggestions(query), 600); // debounce 0.6s
-    });
-
-    async function fetchSuggestions(query) {
+    async function fetchAutocomplete(query) {
+      if (!query || query.length < 3) return;
       try {
-        const res = await fetch(`${backendBase}/autocomplete?q=${encodeURIComponent(query)}`);
+        const res = await fetch(`${backendUrl}/autocomplete?q=${encodeURIComponent(query)}`);
+        if (!res.ok) return;
         const data = await res.json();
-        showSuggestions(data);
-      } catch (err) {
-        console.error("Autocomplete error:", err);
+        const list = document.getElementById('autocomplete-list');
+        list.innerHTML = '';
+        data.forEach(suggestion => {
+          const option = document.createElement('option');
+          option.value = suggestion;
+          list.appendChild(option);
+        });
+      } catch (e) {
+        console.error("Autocomplete error:", e);
       }
     }
 
-    function showSuggestions(list) {
-      suggestionsList.innerHTML = "";
-      if (!list || list.length === 0) {
-        suggestionsList.style.display = "none";
-        return;
-      }
-      list.forEach(item => {
-        const li = document.createElement("li");
-        li.textContent = item;
-        li.onclick = () => {
-          input.value = item;
-          suggestionsList.style.display = "none";
-        };
-        suggestionsList.appendChild(li);
-      });
-      suggestionsList.style.display = "block";
-    }
-
-    // --- Find closest locations ---
     async function findClosest() {
-      const addr = input.value.trim();
-      if (!addr) {
-        output.innerHTML = "Please enter an address.";
-        return;
-      }
-      suggestionsList.style.display = "none";
+      const addr = document.getElementById('address').value;
+      const output = document.getElementById('output');
       output.innerHTML = "Calculating...";
 
       try {
-        const response = await fetch(`${backendBase}/find-closest`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
+        const response = await fetch(`${backendUrl}/find-closest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ address: addr })
         });
 
@@ -118,18 +87,18 @@
         }
 
         const data = await response.json();
-        if (!data || data.length === 0) {
+        if (data.length === 0) {
           output.innerHTML = "No nearby locations found.";
           return;
         }
 
-        output.innerHTML = data.map(r => `
-          <div class="location-card">
+        output.innerHTML = data.map(r =>
+          `<div class="location-card">
             <b>${r.name}</b><br>
-            Phone: ${r.phone}<br>
+            Phone: ${r.phone || 'N/A'}<br>
             Drive time: ${r.drive_time} min (${r.distance_km} km)
-          </div>
-        `).join("");
+          </div>`
+        ).join('');
 
       } catch (err) {
         output.innerHTML = "Error: could not connect to backend.";
@@ -137,11 +106,10 @@
       }
     }
 
-    // --- Hide suggestions when clicking outside ---
-    document.addEventListener("click", (e) => {
-      if (!e.target.closest("#address")) {
-        suggestionsList.style.display = "none";
-      }
+    // Auto-complete listener
+    
+    document.getElementById('address').addEventListener('input', e => {
+      fetchAutocomplete(e.target.value);
     });
   </script>
 </body>
