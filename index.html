@@ -1,161 +1,71 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Closest Dealer Finder</title>
+  <title>Closest Locations Finder</title>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      background-color: #f6f8fa;
-      padding: 40px;
-      text-align: center;
-    }
-    h1 {
-      margin-bottom: 20px;
-    }
-    #addressInput {
-      width: 300px;
-      padding: 10px;
-      font-size: 16px;
+    body { font-family: Arial; margin: 40px; }
+    input { padding: 10px; width: 300px; }
+    button { padding: 10px; margin-left: 10px; cursor: pointer; }
+    .results { margin-top: 20px; }
+    .location-card {
       border: 1px solid #ccc;
+      padding: 15px;
+      margin-bottom: 10px;
       border-radius: 8px;
+      background: #f9f9f9;
     }
-    button {
-      padding: 10px 20px;
-      font-size: 16px;
-      margin-left: 10px;
-      border: none;
-      background-color: #0078d7;
-      color: white;
-      border-radius: 8px;
-      cursor: pointer;
-    }
-    button:hover {
-      background-color: #005ea3;
-    }
-    .results {
-      margin-top: 40px;
-      text-align: left;
-      max-width: 600px;
-      margin-left: auto;
-      margin-right: auto;
-      background: white;
-      padding: 20px;
-      border-radius: 12px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    }
-    .autocomplete-box {
-      position: absolute;
-      background: white;
-      border: 1px solid #ccc;
-      width: 300px;
-      max-height: 200px;
-      overflow-y: auto;
-      z-index: 1000;
-      margin-left: calc(50% - 150px);
-      border-radius: 8px;
-    }
-    .suggestion {
-      padding: 8px;
-      cursor: pointer;
-      border-bottom: 1px solid #eee;
-    }
-    .suggestion:hover {
-      background: #f0f0f0;
-    }
+    .location-card b { font-size: 1.1em; }
   </style>
 </head>
 <body>
-  <h1>Closest Dealer Finder</h1>
-  <div>
-    <input id="addressInput" type="text" placeholder="Enter address or ZIP code" autocomplete="off" />
-    <button id="searchBtn">Search</button>
-  </div>
-  <div id="autocompleteResults" class="autocomplete-box"></div>
-  <div id="results" class="results"></div>
+  <h2>Find closest locations by drive time</h2>
+  <input type="text" id="address" placeholder="Enter address or ZIP code">
+  <button onclick="findClosest()">Search</button>
+
+  <div id="output" class="results"></div>
 
   <script>
-    const BACKEND_URL = "https://closest-dealer-api.onrender.com"; // replace with your Render backend URL
+    async function findClosest() {
+      const addr = document.getElementById('address').value;
+      const output = document.getElementById('output');
+      output.innerHTML = "Calculating...";
 
-    const input = document.getElementById("addressInput");
-    const suggestionsBox = document.getElementById("autocompleteResults");
-    const resultsDiv = document.getElementById("results");
-    const searchBtn = document.getElementById("searchBtn");
-
-    let debounceTimer;
-
-    // ====== AUTOCOMPLETE ======
-    input.addEventListener("input", () => {
-      const query = input.value.trim();
-      clearTimeout(debounceTimer);
-      if (query.length < 3) {
-        suggestionsBox.innerHTML = "";
-        return;
-      }
-      debounceTimer = setTimeout(() => fetchSuggestions(query), 300);
-    });
-
-    async function fetchSuggestions(query) {
-      try {
-        const res = await fetch(`${BACKEND_URL}/autocomplete?q=${encodeURIComponent(query)}`);
-        const data = await res.json();
-        showSuggestions(data.suggestions || []);
-      } catch (err) {
-        console.error("Autocomplete error:", err);
-      }
-    }
-
-    function showSuggestions(list) {
-      suggestionsBox.innerHTML = "";
-      list.forEach(item => {
-        const option = document.createElement("div");
-        option.classList.add("suggestion");
-        option.textContent = item;
-        option.onclick = () => {
-          input.value = item;
-          suggestionsBox.innerHTML = "";
-        };
-        suggestionsBox.appendChild(option);
-      });
-    }
-
-    // ====== SEARCH BUTTON ======
-    searchBtn.addEventListener("click", async () => {
-      const address = input.value.trim();
-      if (!address) return alert("Please enter an address or ZIP code.");
-
-      resultsDiv.innerHTML = "<p>Finding closest dealers...</p>";
+      // Local backend URL (update to deployed backend when live)
+      const backendUrl = "https://closest-dealer-api.onrender.com/find-closest";
 
       try {
-        const res = await fetch(`${BACKEND_URL}/find-closest`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ address }),
+        const response = await fetch(backendUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address: addr })
         });
 
-        if (!res.ok) throw new Error(`Backend error: ${res.status}`);
-        const data = await res.json();
-
-        if (data.closest && data.closest.length) {
-          resultsDiv.innerHTML = data.closest
-            .map(
-              (loc, i) => `
-              <div>
-                <strong>${i + 1}. ${loc.Name}</strong><br>
-                Phone #:${loc.Phone || "N/A"}<br>
-                Distance:${loc.distance_text} (${loc.duration_text})
-              </div><hr>`
-            )
-            .join("");
-        } else {
-          resultsDiv.innerHTML = "<p>No nearby results found.</p>";
+        if (!response.ok) {
+          output.innerHTML = "Error: could not find address or backend issue.";
+          return;
         }
+
+        const data = await response.json();
+
+        if (data.length === 0) {
+          output.innerHTML = "No nearby locations found.";
+          return;
+        }
+
+        output.innerHTML = data.map(r =>
+          `<div class="location-card">
+            <b>${r.name}</b><br>
+            Phone: ${r.phone}<br>
+            Drive time: ${r.drive_time} min (${r.distance_km} km)
+          </div>`
+        ).join('');
+
       } catch (err) {
+        output.innerHTML = "Error: could not connect to backend.";
         console.error(err);
-        resultsDiv.innerHTML = "<p>Error: could not find address or backend issue.</p>";
       }
-    });
+    }
   </script>
 </body>
 </html>
