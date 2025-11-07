@@ -23,7 +23,7 @@ CORS(app)
 client = openrouteservice.Client(key=ORS_API_KEY)
 
 # --- Load Excel file ---
-EXCEL_FILE = "locations_with_cords.xlsx"
+EXCEL_FILE = "locations_with_coords.xlsx"
 try:
     df = pd.read_excel(EXCEL_FILE)
 except FileNotFoundError:
