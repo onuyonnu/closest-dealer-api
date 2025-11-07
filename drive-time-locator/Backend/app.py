@@ -150,9 +150,6 @@ def find_closest():
                 "distance_km": round(row["approx_distance"], 2)
             })
 
-    results.sort(key=lambda x: x["drive_time"])
-    return jsonify(results[:5])
-
 
 @app.route("/autocomplete", methods=["GET"])
 def autocomplete():
