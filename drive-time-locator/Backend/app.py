@@ -83,64 +83,62 @@ def home():
 
 @app.route("/find-closest", methods=["POST"])
 def find_closest():
-    data = request.get_json()
-    user_address = data.get("address")
+    try:
+        data = request.get_json()
+        user_address = data.get("address")
 
-    if not user_address:
-        return jsonify({"error": "No address provided"}), 400
+        if not user_address:
+            return jsonify({"error": "No address provided"}), 400
 
-    geolocator = Nominatim(user_agent="geoapi")
+        # --- Geocode user address ---
+        search = client.pelias_search(text=user_address)
+        if not search or not search.get("features"):
+            return jsonify({"error": "Address not found"}), 400
 
-    # safer throttled geocoding
-    location = safe_geocode(geolocator, user_address)
-    if not location:
-        return jsonify({"error": "Address not found or geocoding service unavailable"}), 400
+        coords = search["features"][0]["geometry"]["coordinates"]
+        user_lon, user_lat = coords[0], coords[1]
+        print(f"User coords: {user_lat}, {user_lon}")
 
-    user_lat, user_lon = location.latitude, location.longitude
+        # --- Approximate distances ---
+        df["approx_distance"] = df.apply(
+            lambda row: haversine(user_lat, user_lon, row["Latitude"], row["Longitude"]), axis=1
+        )
+        candidates = df.sort_values("approx_distance").head(10)
 
-    # Step 1: approximate distances
-    df["approx_distance"] = df.apply(
-        lambda row: haversine(user_lat, user_lon, row["Latitude"], row["Longitude"]), axis=1
-    )
+        results = []
+        for _, row in candidates.iterrows():
+            dest = (row["Longitude"], row["Latitude"])
+            try:
+                route = client.directions(
+                    coordinates=[(user_lon, user_lat), dest],
+                    profile="driving-car",
+                    format="geojson"
+                )
+                summary = route["features"][0]["properties"]["summary"]
+                distance = summary["distance"] / 1000
+                duration = summary["duration"] / 60
 
-    # Step 2: top 10 nearest candidates
-    candidates = df.sort_values("approx_distance").head(10)
+                print(f"{row['Name']} — ORS distance: {distance:.2f} km, duration: {duration:.1f} min")
 
-    results = []
-    for _, row in candidates.iterrows():
-        dest_coords = (row["Longitude"], row["Latitude"])
-        approx_km = row["approx_distance"]
-    
-        # Log diagnostic info for each candidate
-        print(f"\n--- Route Debug ---")
-        print(f"User address: {user_address}")
-        print(f"User coords: ({user_lat}, {user_lon})")
-        print(f"Destination: {row['Name']}")
-        print(f"Dest coords: {dest_coords} (lat={row['Latitude']}, lon={row['Longitude']})")
-        print(f"Approx distance (Haversine): {approx_km:.2f} km")
-    
-        try:
-            route = client.directions(
-                coordinates=[(user_lon, user_lat), dest_coords],
-                profile="driving-car",
-                format="geojson"
-            )
-    
-            summary = route["features"][0]["properties"]["summary"]
-            duration = summary["duration"] / 60  # min
-            distance = summary["distance"] / 1000  # km
-    
-            print(f"ORS route distance: {distance:.2f} km, duration: {duration:.2f} min")
-    
-            results.append({
-                "name": row["Name"],
-                "phone": row.get("Phone", ""),
-                "drive_time": round(duration, 1),
-                "distance_km": round(distance, 2)
-            })
-    
-        except Exception as e:
-            print(f"Error getting route for {row['Name']}: {e}")
+                results.append({
+                    "name": row["Name"],
+                    "phone": row.get("Phone", ""),
+                    "drive_time": round(duration, 1),
+                    "distance_km": round(distance, 2)
+                })
+            except Exception as e:
+                print(f"Error getting route for {row['Name']}: {e}")
+                continue
+
+        if not results:
+            return jsonify({"error": "No valid routes found"}), 500
+
+        results.sort(key=lambda x: x["drive_time"])
+        return jsonify(results[:5])
+
+    except Exception as e:
+        print(f"Error processing request: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
             # fallback: approximate drive time (80 km/h)
