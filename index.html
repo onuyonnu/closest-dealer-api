@@ -25,6 +25,8 @@
       max-width: 600px;
     }
     .faq h3 { margin-top: 0; }
+    .error { color: #b00020; margin-top: 12px; }
+    .debug { color: #666; font-size: 0.9em; margin-top: 12px; white-space: pre-wrap; }
   </style>
 </head>
 <body>
@@ -35,6 +37,8 @@
   <datalist id="autocomplete-list"></datalist>
 
   <div id="output" class="results"></div>
+  <div id="ui-error" class="error" role="status" aria-live="polite"></div>
+  <div id="debug" class="debug"></div>
 
   <div class="faq">
     <h3>ℹ️ About this tool</h3>
@@ -45,27 +49,61 @@
       <li><b>Hawaii</b> and <b>Puerto Rico</b> dealers are not currently included.</li>
       <li>All geocoding and routing requests are made through free services — please be patient as responses may take a few seconds.</li>
       <li>If results don’t appear immediately, try again in a few moments.</li>
-      <li>For whatever reason the app currently hates Texas building a log system to find out why.</li>
+      <li>For whatever reason the app currently hates Texas — added logging to diagnose.</li>
     </ul>
   </div>
 
   <script>
-    const backendUrl = "https://closest-dealer-api.onrender.com";
+    // Use local backend when developing; otherwise use deployed URL
+    const backendUrl = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+      ? 'http://localhost:5000'
+      : 'https://closest-dealer-api.onrender.com';
+
+    const debugEl = document.getElementById('debug');
+    const uiError = document.getElementById('ui-error');
+
+    function logDebug(...args) {
+      console.log(...args);
+      debugEl.textContent += args.map(a => (typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a))).join(' ') + '\n';
+    }
+
+    function clearDebug() { debugEl.textContent = ''; }
 
     function kmToMiles(km) {
       return (km * 0.621371).toFixed(2);
     }
 
-    function minsToHours(mins) {
-      const hrs = mins / 60;
-      return hrs.toFixed(2);
+    function renderResults(items) {
+      const out = document.getElementById('output');
+      out.innerHTML = '';
+      if (!items || items.length === 0) {
+        out.textContent = 'No results found.';
+        return;
+      }
+      items.forEach(it => {
+        const card = document.createElement('div');
+        card.className = 'location-card';
+        card.innerHTML = `
+          <div><b>${it.name}</b></div>
+          <div>Phone: ${it.phone || 'N/A'}</div>
+          <div>Drive time: ${it.drive_time} min (${(it.drive_time/60).toFixed(2)} hrs)</div>
+          <div>Distance: ${it.distance_km} km (${kmToMiles(it.distance_km)} mi)</div>
+        `;
+        out.appendChild(card);
+      });
     }
 
     async function fetchAutocomplete(query) {
       if (!query || query.length < 3) return;
+      const url = `${backendUrl}/autocomplete?q=${encodeURIComponent(query)}`;
+      logDebug('Autocomplete ->', url);
       try {
-        const res = await fetch(`${backendUrl}/autocomplete?q=${encodeURIComponent(query)}`);
-        if (!res.ok) return;
+        const res = await fetch(url, { method: 'GET', credentials: 'omit' });
+        logDebug('Autocomplete status:', res.status);
+        if (!res.ok) {
+          logDebug('Autocomplete non-ok response', await res.text());
+          return;
+        }
         const data = await res.json();
         const list = document.getElementById('autocomplete-list');
         list.innerHTML = '';
@@ -74,47 +112,60 @@
           option.value = suggestion;
           list.appendChild(option);
         });
-      } catch (e) {
-        console.error("Autocomplete error:", e);
+      } catch (err) {
+        logDebug('Autocomplete network/error:', err);
       }
     }
 
     async function findClosest() {
-      const addr = document.getElementById('address').value;
-      const output = document.getElementById('output');
-      output.innerHTML = "Calculating...";
+      clearDebug();
+      uiError.textContent = '';
+      const addr = document.getElementById('address').value.trim();
+      if (!addr) {
+        uiError.textContent = 'Please enter an address or ZIP code.';
+        return;
+      }
+
+      const url = `${backendUrl}/find-closest`;
+      logDebug('findClosest ->', url, 'payload:', { address: addr });
+
+      document.getElementById('output').innerHTML = 'Calculating...';
 
       try {
-        const response = await fetch(`${backendUrl}/find-closest`, {
+        const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address: addr })
+          body: JSON.stringify({ address: addr }),
+          // include credentials only if backend expects them
         });
+        logDebug('Response status:', res.status, 'ok:', res.ok);
 
-        if (!response.ok) {
-          output.innerHTML = "Error: could not find address or backend issue.";
+        const text = await res.text().catch(() => null);
+        let json = null;
+        try { json = text ? JSON.parse(text) : null; } catch(e) { /* not JSON */ }
+
+        if (!res.ok) {
+          logDebug('Non-OK response body:', text);
+          // Show backend error if present
+          if (json && json.error) {
+            uiError.textContent = `Backend error: ${json.error}`;
+          } else {
+            uiError.textContent = `Error: backend returned status ${res.status}`;
+          }
+          document.getElementById('output').innerHTML = '';
           return;
         }
 
-        const data = await response.json();
-        if (data.length === 0) {
-          output.innerHTML = "No nearby locations found.";
-          return;
-        }
-
-        output.innerHTML = data.map(r => {
-          const distanceMiles = kmToMiles(r.distance_km);
-          const timeHours = minsToHours(r.drive_time);
-          return `<div class="location-card">
-                    <b>${r.name}</b><br>
-                    Phone: ${r.phone || 'N/A'}<br>
-                    Drive time: ${timeHours} hrs (${distanceMiles} mi)
-                  </div>`;
-        }).join('');
-
+        // success
+        const results = json || [];
+        logDebug('Successful response body:', results);
+        renderResults(results);
       } catch (err) {
-        output.innerHTML = "Error: could not connect to backend.";
-        console.error(err);
+        // network-level error (DNS, refused, CORS block, etc.)
+        console.error('Network/error while calling backend:', err);
+        logDebug('Network/error while calling backend:', err);
+        uiError.textContent = 'Error: could not connect to backend. See console/debug output for details.';
+        document.getElementById('output').innerHTML = '';
       }
     }
 
