@@ -139,18 +139,7 @@ def find_closest():
     except Exception as e:
         print(f"Error processing request: {e}")
         return jsonify({"error": str(e)}), 500
-
-
-            # fallback: approximate drive time (80 km/h)
-            fallback_time = row["approx_distance"] / 80 * 60
-            results.append({
-                "name": row["Name"],
-                "phone": row.get("Phone", ""),
-                "drive_time": round(fallback_time, 1),
-                "distance_km": round(row["approx_distance"], 2)
-            })
-
-
+    
 @app.route("/autocomplete", methods=["GET"])
 def autocomplete():
     query = request.args.get("q", "")
