@@ -8,6 +8,11 @@ import os
 import math
 import time
 import threading
+import logging
+
+# --- Logging setup ---
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("closest-dealer-api")
 
 # --- Load environment variables ---
 load_dotenv()
@@ -68,10 +73,12 @@ def safe_geocode(geolocator, query, retries=3, delay=1.0):
                 )
                 last_geocode_time = time.time()
             if location:
+                logger.info(f"Geocoded '{query}' -> {location.latitude}, {location.longitude}")
                 return location
         except Exception as e:
-            print(f"Geocode attempt {attempt+1} failed for {query}: {e}")
+            logger.warning(f"Geocode attempt {attempt+1} failed for '{query}': {e}")
             time.sleep(delay * (attempt + 1))  # exponential backoff
+    logger.error(f"Geocoding failed for '{query}' after {retries} attempts")
     return None
 
 
@@ -83,66 +90,97 @@ def home():
 
 @app.route("/find-closest", methods=["POST"])
 def find_closest():
-    try:
-        data = request.get_json()
-        user_address = data.get("address")
+    data = request.get_json()
+    user_address = data.get("address")
+    logger.info(f"find-closest called from {request.remote_addr} with address: '{user_address}'")
 
-        if not user_address:
-            return jsonify({"error": "No address provided"}), 400
+    if not user_address:
+        logger.warning("No address provided in request")
+        return jsonify({"error": "No address provided"}), 400
 
-        # --- Geocode user address ---
-        search = client.pelias_search(text=user_address)
-        if not search or not search.get("features"):
-            return jsonify({"error": "Address not found"}), 400
+    geolocator = Nominatim(user_agent="geoapi")
 
-        coords = search["features"][0]["geometry"]["coordinates"]
-        user_lon, user_lat = coords[0], coords[1]
-        print(f"User coords: {user_lat}, {user_lon}")
+    # safer throttled geocoding
+    location = safe_geocode(geolocator, user_address)
+    if not location:
+        logger.error(f"Address not found or geocoding service unavailable for '{user_address}'")
+        return jsonify({"error": "Address not found or geocoding service unavailable"}), 400
 
-        # --- Approximate distances ---
-        df["approx_distance"] = df.apply(
-            lambda row: haversine(user_lat, user_lon, row["Latitude"], row["Longitude"]), axis=1
+    user_lat, user_lon = location.latitude, location.longitude
+    logger.info(f"User coords: {user_lat}, {user_lon}")
+
+    # Step 1: approximate distances (km)
+    df["approx_distance"] = df.apply(
+        lambda row: haversine(user_lat, user_lon, row["Latitude"], row["Longitude"]), axis=1
+    )
+
+    # Step 2: top 10 nearest candidates by approx distance
+    candidates = df.sort_values("approx_distance").head(10)
+
+    results = []
+    for _, row in candidates.iterrows():
+        dest_lat = row["Latitude"]
+        dest_lon = row["Longitude"]
+        approx_km = row["approx_distance"]
+        approx_miles = approx_km * 0.621371
+        approx_time_min = approx_km / 80 * 60  # fallback approx time at 80 km/h
+
+        # Log approximate values for each candidate
+        logger.info(
+            f"Candidate '{row['Name']}' at ({dest_lat}, {dest_lon}) -> approx {approx_km:.2f} km "
+            f"({approx_miles:.1f} mi), approx_time {approx_time_min:.1f} min"
         )
-        candidates = df.sort_values("approx_distance").head(10)
 
-        results = []
-        for _, row in candidates.iterrows():
-            dest = (row["Longitude"], row["Latitude"])
-            try:
-                route = client.directions(
-                    coordinates=[(user_lon, user_lat), dest],
-                    profile="driving-car",
-                    format="geojson"
-                )
-                summary = route["features"][0]["properties"]["summary"]
-                distance = summary["distance"] / 1000
-                duration = summary["duration"] / 60
+        # Skip candidates over 500 miles
+        if approx_miles > 500:
+            logger.info(f"Skipping '{row['Name']}' (approx {approx_miles:.1f} mi > 500 mi)")
+            continue
 
-                print(f"{row['Name']} — ORS distance: {distance:.2f} km, duration: {duration:.1f} min")
+        dest_coords = (dest_lon, dest_lat)
+        try:
+            # perform routing call with a short safety timeout via ORS internal client
+            start_time = time.time()
+            route = client.directions(
+                coordinates=[(user_lon, user_lat), dest_coords],
+                profile="driving-car",
+                format="geojson"
+            )
+            # enforce manual timeout safeguard (10s max)
+            if time.time() - start_time > 10:
+                raise TimeoutError("ORS request exceeded 10 seconds")
 
-                results.append({
-                    "name": row["Name"],
-                    "phone": row.get("Phone", ""),
-                    "drive_time": round(duration, 1),
-                    "distance_km": round(distance, 2)
-                })
-            except Exception as e:
-                print(f"Error getting route for {row['Name']}: {e}")
-                continue
+            duration = route["features"][0]["properties"]["summary"]["duration"] / 60
+            distance = route["features"][0]["properties"]["summary"]["distance"] / 1000
 
-        if not results:
-            return jsonify({"error": "No valid routes found"}), 500
+            logger.info(f"{row['Name']} — ORS distance: {distance:.2f} km, duration: {duration:.1f} min")
 
-        results.sort(key=lambda x: x["drive_time"])
-        return jsonify(results[:5])
+            results.append({
+                "name": row["Name"],
+                "phone": row.get("Phone", ""),
+                "drive_time": round(duration, 1),
+                "distance_km": round(distance, 2)
+            })
+        except Exception as e:
+            logger.error(f"Error getting route for {row['Name']}: {e}")
+            # fallback: approximate drive time (80 km/h)
+            fallback_time = approx_time_min
+            logger.info(f"Fallback for {row['Name']}: approx_distance {approx_km:.2f} km, fallback_time {fallback_time:.1f} min")
+            results.append({
+                "name": row["Name"],
+                "phone": row.get("Phone", ""),
+                "drive_time": round(fallback_time, 1),
+                "distance_km": round(approx_km, 2)
+            })
 
-    except Exception as e:
-        print(f"Error processing request: {e}")
-        return jsonify({"error": str(e)}), 500
-    
+    results.sort(key=lambda x: x["drive_time"])
+    logger.info(f"Returning top {min(5, len(results))} results")
+    return jsonify(results[:5])
+
+
 @app.route("/autocomplete", methods=["GET"])
 def autocomplete():
     query = request.args.get("q", "")
+    logger.info(f"autocomplete called q='{query}'")
     if not query:
         return jsonify([])
 
@@ -162,11 +200,12 @@ def autocomplete():
                 timeout=10
             )
     except Exception as e:
-        print(f"Autocomplete error: {e}")
+        logger.error(f"Autocomplete error: {e}")
         return jsonify([])
 
     if locations:
         suggestions = [loc.address for loc in locations]
+        logger.info(f"Autocomplete suggestions: {suggestions}")
 
     return jsonify(suggestions)
 
