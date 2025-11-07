@@ -107,40 +107,41 @@ def find_closest():
     candidates = df.sort_values("approx_distance").head(10)
 
     results = []
-        for _, row in candidates.iterrows():
-            dest_coords = (row["Longitude"], row["Latitude"])
-            approx_km = row["approx_distance"]
-        
-            # Log diagnostic info for each candidate
-            print(f"\n--- Route Debug ---")
-            print(f"User address: {user_address}")
-            print(f"User coords: ({user_lat}, {user_lon})")
-            print(f"Destination: {row['Name']}")
-            print(f"Dest coords: {dest_coords} (lat={row['Latitude']}, lon={row['Longitude']})")
-            print(f"Approx distance (Haversine): {approx_km:.2f} km")
-        
-            try:
-                route = client.directions(
-                    coordinates=[(user_lon, user_lat), dest_coords],
-                    profile="driving-car",
-                    format="geojson"
-                )
-        
-                summary = route["features"][0]["properties"]["summary"]
-                duration = summary["duration"] / 60  # min
-                distance = summary["distance"] / 1000  # km
-        
-                print(f"ORS route distance: {distance:.2f} km, duration: {duration:.2f} min")
-        
-                results.append({
-                    "name": row["Name"],
-                    "phone": row.get("Phone", ""),
-                    "drive_time": round(duration, 1),
-                    "distance_km": round(distance, 2)
-                })
-        
-            except Exception as e:
-                print(f"Error getting route for {row['Name']}: {e}")
+    for _, row in candidates.iterrows():
+        dest_coords = (row["Longitude"], row["Latitude"])
+        approx_km = row["approx_distance"]
+    
+        # Log diagnostic info for each candidate
+        print(f"\n--- Route Debug ---")
+        print(f"User address: {user_address}")
+        print(f"User coords: ({user_lat}, {user_lon})")
+        print(f"Destination: {row['Name']}")
+        print(f"Dest coords: {dest_coords} (lat={row['Latitude']}, lon={row['Longitude']})")
+        print(f"Approx distance (Haversine): {approx_km:.2f} km")
+    
+        try:
+            route = client.directions(
+                coordinates=[(user_lon, user_lat), dest_coords],
+                profile="driving-car",
+                format="geojson"
+            )
+    
+            summary = route["features"][0]["properties"]["summary"]
+            duration = summary["duration"] / 60  # min
+            distance = summary["distance"] / 1000  # km
+    
+            print(f"ORS route distance: {distance:.2f} km, duration: {duration:.2f} min")
+    
+            results.append({
+                "name": row["Name"],
+                "phone": row.get("Phone", ""),
+                "drive_time": round(duration, 1),
+                "distance_km": round(distance, 2)
+            })
+    
+        except Exception as e:
+            print(f"Error getting route for {row['Name']}: {e}")
+
 
             # fallback: approximate drive time (80 km/h)
             fallback_time = row["approx_distance"] / 80 * 60
