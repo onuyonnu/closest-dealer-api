@@ -9,22 +9,43 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# OpenRouteService API key
+# --- OpenRouteService API key ---
 ORS_API_KEY = os.getenv("ORS_API_KEY")
+if not ORS_API_KEY:
+    raise EnvironmentError("ORS_API_KEY not found in environment variables or .env file")
+
 client = Client(key=ORS_API_KEY)
 
-# Load dealer data
-DEALERS_CSV = "dealers.csv"
-dealers = pd.read_csv(DEALERS_CSV)
+# --- Load Excel file ---
+EXCEL_FILE = "locations_with_coords.xlsx"
+try:
+    df = pd.read_excel(EXCEL_FILE)
+except FileNotFoundError:
+    raise FileNotFoundError(f"{EXCEL_FILE} not found in backend folder.")
 
-# Haversine formula for approximate distance
+required_cols = ["Name", "Latitude", "Longitude"]
+for col in required_cols:
+    if col not in df.columns:
+        raise ValueError(f"Missing required column: {col}")
+
+# Add Phone column if missing
+if "Phone" not in df.columns:
+    df["Phone"] = ""
+
+# --- Haversine function (approx distance in km) ---
 def haversine(lat1, lon1, lat2, lon2):
-    R = 6371  # Earth radius in km
+    R = 6371
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2)**2
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
+
+
+@app.route("/")
+def home():
+    return {"message": "Drive Time Locator API is running"}
+
 
 @app.route("/find-closest", methods=["POST"])
 def find_closest():
@@ -35,7 +56,7 @@ def find_closest():
         return jsonify({"error": "Address is required"}), 400
 
     try:
-        # Geocode address using OpenRouteService
+        # --- Geocode address ---
         geocode = client.pelias_search(text=address, boundary_country=["US"])
         if not geocode or "features" not in geocode or len(geocode["features"]) == 0:
             return jsonify({"error": "Could not geocode address"}), 404
@@ -43,17 +64,16 @@ def find_closest():
         coords = geocode["features"][0]["geometry"]["coordinates"]
         user_lon, user_lat = coords[0], coords[1]
 
-        # Check for invalid coordinates
         if not all(map(math.isfinite, [user_lat, user_lon])):
             return jsonify({"error": "Invalid coordinates"}), 400
 
-        # Filter dealers within 500 km using haversine distance
-        dealers["approx_distance"] = dealers.apply(
+        # --- Estimate distances ---
+        df["approx_distance"] = df.apply(
             lambda row: haversine(user_lat, user_lon, row["Latitude"], row["Longitude"]),
             axis=1
         )
 
-        candidates = dealers[dealers["approx_distance"] < 500].sort_values("approx_distance").head(10)
+        candidates = df[df["approx_distance"] < 500].sort_values("approx_distance").head(10)
 
         if candidates.empty:
             return jsonify([])
@@ -63,7 +83,7 @@ def find_closest():
             dest_coords = (row["Longitude"], row["Latitude"])
             approx_km = row["approx_distance"]
 
-            # Debugging info
+            # Debug logs
             print(f"\n--- Route Debug ---")
             print(f"User address: {address}")
             print(f"User coords: ({user_lat}, {user_lon})")
@@ -72,10 +92,8 @@ def find_closest():
             print(f"Approx distance (Haversine): {approx_km:.2f} km")
 
             try:
-                # Add a delay to prevent hitting API rate limits
-                time.sleep(0.75)
+                time.sleep(0.75)  # throttle to reduce API rate hits
 
-                # Request driving route (no timeout param, handled via default retries)
                 route = client.directions(
                     coordinates=[(user_lon, user_lat), dest_coords],
                     profile="driving-car",
@@ -112,7 +130,7 @@ def autocomplete():
         return jsonify([])
 
     try:
-        time.sleep(0.2)  # Slight delay to reduce spam to API
+        time.sleep(0.2)  # throttle API requests slightly
         response = client.pelias_autocomplete(text=query, boundary_country=["US"])
         suggestions = [
             f["properties"]["label"]
@@ -126,4 +144,4 @@ def autocomplete():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000, debug=True)
