@@ -121,9 +121,20 @@ def find_closest():
     for _, row in candidates.iterrows():
         dest_lat = row["Latitude"]
         dest_lon = row["Longitude"]
+        
+        # Skip entries with invalid coordinates
+        if pd.isna(dest_lat) or pd.isna(dest_lon):
+            logger.warning(f"Skipping '{row['Name']}' - invalid coordinates")
+            continue
+
         approx_km = float(row["approx_distance"])
+        # Skip if distance calculation failed
+        if pd.isna(approx_km):
+            logger.warning(f"Skipping '{row['Name']}' - invalid distance calculation")
+            continue
+
         approx_miles = approx_km * 0.621371
-        approx_time_min = approx_km / 80 * 60  # fallback approx time at 80 km/h
+        approx_time_min = approx_km / 80 * 60
 
         # Log approximate values for each candidate
         logger.info(
@@ -136,17 +147,21 @@ def find_closest():
             logger.info(f"Skipping '{row['Name']}' (approx {approx_miles:.1f} mi > 500 mi)")
             continue
 
+        # Clean phone number - replace NaN with empty string
+        phone = str(row.get("Phone", "")) if not pd.isna(row.get("Phone")) else ""
+
         # Use approximate values directly (no ORS routing)
         results.append({
-            "name": row["Name"],
-            "phone": row.get("Phone", ""),
+            "name": str(row["Name"]),  # Convert to string to handle numeric names
+            "phone": phone,
             "drive_time": round(approx_time_min, 1),
             "distance_km": round(approx_km, 2)
         })
 
     results.sort(key=lambda x: x["drive_time"])
-    logger.info(f"Returning top {min(5, len(results))} results (approximate only)")
-    return jsonify(results[:5])
+    final_results = results[:5]
+    logger.info(f"Returning top {len(final_results)} results (approximate only)")
+    return jsonify(final_results)
 
 
 @app.route("/autocomplete", methods=["GET"])
