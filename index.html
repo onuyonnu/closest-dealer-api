@@ -141,24 +141,30 @@
         logDebug('Response status:', res.status, 'ok:', res.ok);
 
         const text = await res.text().catch(() => null);
-        let json = null;
-        try { json = text ? JSON.parse(text) : null; } catch(e) { /* not JSON */ }
-
-        if (!res.ok) {
-          logDebug('Non-OK response body:', text);
-          // Show backend error if present
-          if (json && json.error) {
-            uiError.textContent = `Backend error: ${json.error}`;
-          } else {
-            uiError.textContent = `Error: backend returned status ${res.status}`;
-          }
-          document.getElementById('output').innerHTML = '';
-          return;
+        logDebug('Raw response text:', text);
+        let payload = null;
+        try { payload = text ? JSON.parse(text) : null; } catch (e) {
+          logDebug('Failed to parse JSON response:', e);
+          payload = null;
         }
 
-        // success
-        const results = json || [];
-        logDebug('Successful response body:', results);
+        // Normalize common backend shapes to an array
+        let results = [];
+        if (Array.isArray(payload)) {
+          results = payload;
+        } else if (payload && Array.isArray(payload.results)) {
+          results = payload.results;
+        } else if (payload && Array.isArray(payload.data)) {
+          results = payload.data;
+        } else if (payload && payload.error) {
+          uiError.textContent = `Backend error: ${payload.error}`;
+          document.getElementById('output').innerHTML = '';
+          return;
+        } else if (!payload) {
+          results = [];
+        }
+
+        logDebug('Parsed results:', results);
         renderResults(results);
       } catch (err) {
         // network-level error (DNS, refused, CORS block, etc.)
