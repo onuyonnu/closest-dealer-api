@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import pandas as pd
-import openrouteservice
+# removed openrouteservice usage - using approximate distances only
+#from openrouteservice import Client
 from geopy.geocoders import Nominatim
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -17,15 +18,14 @@ logger = logging.getLogger("closest-dealer-api")
 # --- Load environment variables ---
 load_dotenv()
 ORS_API_KEY = os.getenv("ORS_API_KEY")
-if not ORS_API_KEY:
-    raise EnvironmentError("ORS_API_KEY not found in environment variables or .env file")
+# ORS_API_KEY is optional now because we use approximate-only mode locally
 
 # --- Flask setup ---
 app = Flask(__name__)
 CORS(app)
 
 # --- ORS client ---
-client = openrouteservice.Client(key=ORS_API_KEY)
+# client = openrouteservice.Client(key=ORS_API_KEY)  # removed - not used in approximate-only mode
 
 # --- Load Excel file ---
 EXCEL_FILE = "locations_with_coords.xlsx"
@@ -90,7 +90,7 @@ def home():
 
 @app.route("/find-closest", methods=["POST"])
 def find_closest():
-    data = request.get_json()
+    data = request.get_json() or {}
     user_address = data.get("address")
     logger.info(f"find-closest called from {request.remote_addr} with address: '{user_address}'")
 
@@ -114,14 +114,14 @@ def find_closest():
         lambda row: haversine(user_lat, user_lon, row["Latitude"], row["Longitude"]), axis=1
     )
 
-    # Step 2: top 10 nearest candidates by approx distance
-    candidates = df.sort_values("approx_distance").head(10)
+    # Step 2: choose nearest candidates by approx distance (increase window slightly then filter)
+    candidates = df.sort_values("approx_distance").head(50)
 
     results = []
     for _, row in candidates.iterrows():
         dest_lat = row["Latitude"]
         dest_lon = row["Longitude"]
-        approx_km = row["approx_distance"]
+        approx_km = float(row["approx_distance"])
         approx_miles = approx_km * 0.621371
         approx_time_min = approx_km / 80 * 60  # fallback approx time at 80 km/h
 
@@ -136,44 +136,16 @@ def find_closest():
             logger.info(f"Skipping '{row['Name']}' (approx {approx_miles:.1f} mi > 500 mi)")
             continue
 
-        dest_coords = (dest_lon, dest_lat)
-        try:
-            # perform routing call with a short safety timeout via ORS internal client
-            start_time = time.time()
-            route = client.directions(
-                coordinates=[(user_lon, user_lat), dest_coords],
-                profile="driving-car",
-                format="geojson"
-            )
-            # enforce manual timeout safeguard (10s max)
-            if time.time() - start_time > 10:
-                raise TimeoutError("ORS request exceeded 10 seconds")
-
-            duration = route["features"][0]["properties"]["summary"]["duration"] / 60
-            distance = route["features"][0]["properties"]["summary"]["distance"] / 1000
-
-            logger.info(f"{row['Name']} — ORS distance: {distance:.2f} km, duration: {duration:.1f} min")
-
-            results.append({
-                "name": row["Name"],
-                "phone": row.get("Phone", ""),
-                "drive_time": round(duration, 1),
-                "distance_km": round(distance, 2)
-            })
-        except Exception as e:
-            logger.error(f"Error getting route for {row['Name']}: {e}")
-            # fallback: approximate drive time (80 km/h)
-            fallback_time = approx_time_min
-            logger.info(f"Fallback for {row['Name']}: approx_distance {approx_km:.2f} km, fallback_time {fallback_time:.1f} min")
-            results.append({
-                "name": row["Name"],
-                "phone": row.get("Phone", ""),
-                "drive_time": round(fallback_time, 1),
-                "distance_km": round(approx_km, 2)
-            })
+        # Use approximate values directly (no ORS routing)
+        results.append({
+            "name": row["Name"],
+            "phone": row.get("Phone", ""),
+            "drive_time": round(approx_time_min, 1),
+            "distance_km": round(approx_km, 2)
+        })
 
     results.sort(key=lambda x: x["drive_time"])
-    logger.info(f"Returning top {min(5, len(results))} results")
+    logger.info(f"Returning top {min(5, len(results))} results (approximate only)")
     return jsonify(results[:5])
 
 
