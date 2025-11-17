@@ -26,7 +26,30 @@
     }
     .faq h3 { margin-top: 0; }
     .error { color: #b00020; margin-top: 12px; }
-    .debug { color: #666; font-size: 0.9em; margin-top: 12px; white-space: pre-wrap; }
+
+    /* Loading bar styles */
+    .loading-wrap { display: inline-block; vertical-align: middle; margin-left: 10px; }
+    .loading {
+      width: 300px;
+      height: 8px;
+      background: #eee;
+      border-radius: 6px;
+      overflow: hidden;
+      visibility: hidden;
+    }
+    .loading .bar {
+      height: 100%;
+      width: 40%;
+      background: linear-gradient(90deg,#4CAF50,#66bb6a);
+      border-radius: 6px;
+      transform: translateX(-110%);
+      animation: slide 1.1s linear infinite;
+    }
+    @keyframes slide {
+      0% { transform: translateX(-110%); }
+      50% { transform: translateX(30%); }
+      100% { transform: translateX(110%); }
+    }
   </style>
 </head>
 <body>
@@ -34,11 +57,16 @@
   <input type="text" id="address" placeholder="Enter address or ZIP code" list="autocomplete-list">
   <button onclick="findClosest()">Search</button>
 
+  <div class="loading-wrap" aria-hidden="true">
+    <div id="loading" class="loading" aria-hidden="true">
+      <div class="bar"></div>
+    </div>
+  </div>
+
   <datalist id="autocomplete-list"></datalist>
 
   <div id="output" class="results"></div>
   <div id="ui-error" class="error" role="status" aria-live="polite"></div>
-  <div id="debug" class="debug"></div>
 
   <div class="faq">
     <h3>ℹ️ About this tool</h3>
@@ -46,28 +74,33 @@
     <p>This tool helps you find the closest dealer locations by drive time.</p>
     <ul>
       <li>Auto-complete only works for <b>United States addresses</b>.</li>
-      <li><b>Hawaii</b> and <b>Puerto Rico</b> dealers are not currently included.</li>
+      <li>All dealers are now included.</li>
       <li>All geocoding and routing requests are made through free services — please be patient as responses may take a few seconds.</li>
       <li>If results don’t appear immediately, try again in a few moments.</li>
-      <li>For whatever reason the app currently hates Texas — added logging to diagnose.</li>
+      <li>Issues with Texas Dealer resolved.</li>
     </ul>
   </div>
 
   <script>
-    // Use local backend when developing; otherwise use deployed URL
     const backendUrl = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
       ? 'http://localhost:5000'
       : 'https://closest-dealer-api.onrender.com';
 
-    const debugEl = document.getElementById('debug');
     const uiError = document.getElementById('ui-error');
+    const loadingEl = document.getElementById('loading');
 
-    function logDebug(...args) {
-      console.log(...args);
-      debugEl.textContent += args.map(a => (typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a))).join(' ') + '\n';
+    // noop debug function so existing calls don't error but nothing is shown on page
+    function logDebug() { /* no-op */ }
+    function clearDebug() { /* no-op */ }
+
+    function showLoading() {
+      loadingEl.style.visibility = 'visible';
+      loadingEl.setAttribute('aria-hidden', 'false');
     }
-
-    function clearDebug() { debugEl.textContent = ''; }
+    function hideLoading() {
+      loadingEl.style.visibility = 'hidden';
+      loadingEl.setAttribute('aria-hidden', 'true');
+    }
 
     function kmToMiles(km) {
       return (km * 0.621371).toFixed(2);
@@ -99,11 +132,7 @@
       logDebug('Autocomplete ->', url);
       try {
         const res = await fetch(url, { method: 'GET', credentials: 'omit' });
-        logDebug('Autocomplete status:', res.status);
-        if (!res.ok) {
-          logDebug('Autocomplete non-ok response', await res.text());
-          return;
-        }
+        if (!res.ok) return;
         const data = await res.json();
         const list = document.getElementById('autocomplete-list');
         list.innerHTML = '';
@@ -113,7 +142,7 @@
           list.appendChild(option);
         });
       } catch (err) {
-        logDebug('Autocomplete network/error:', err);
+        // silently ignore frontend autocomplete errors
       }
     }
 
@@ -130,25 +159,19 @@
       logDebug('findClosest ->', url, 'payload:', { address: addr });
 
       document.getElementById('output').innerHTML = 'Calculating...';
+      showLoading();
 
       try {
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ address: addr }),
-          // include credentials only if backend expects them
         });
-        logDebug('Response status:', res.status, 'ok:', res.ok);
 
         const text = await res.text().catch(() => null);
-        logDebug('Raw response text:', text);
         let payload = null;
-        try { payload = text ? JSON.parse(text) : null; } catch (e) {
-          logDebug('Failed to parse JSON response:', e);
-          payload = null;
-        }
+        try { payload = text ? JSON.parse(text) : null; } catch (e) { payload = null; }
 
-        // Normalize common backend shapes to an array
         let results = [];
         if (Array.isArray(payload)) {
           results = payload;
@@ -164,14 +187,13 @@
           results = [];
         }
 
-        logDebug('Parsed results:', results);
         renderResults(results);
       } catch (err) {
-        // network-level error (DNS, refused, CORS block, etc.)
         console.error('Network/error while calling backend:', err);
-        logDebug('Network/error while calling backend:', err);
-        uiError.textContent = 'Error: could not connect to backend. See console/debug output for details.';
+        uiError.textContent = 'Error: could not connect to backend. See console for details.';
         document.getElementById('output').innerHTML = '';
+      } finally {
+        hideLoading();
       }
     }
 
