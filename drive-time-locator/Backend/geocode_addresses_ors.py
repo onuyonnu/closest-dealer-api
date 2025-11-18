@@ -94,7 +94,8 @@ street_col = find_column(df, ["Billing Street", "Street", "Address", "Billing Ad
 city_col = find_column(df, ["Billing City", "City"])
 state_col = find_column(df, ["Billing State/Province", "State", "Province"])
 zip_col = find_column(df, ["Billing Zip/Postal Code", "Zip", "Postal Code", "Zip/Postal Code"])
-existing_address_col = find_column(df, ["Address", "Billing Address", "Billing Street"])
+# prefer an explicit Address column only (don't treat Billing Street as the full Address)
+existing_address_col = find_column(df, ["Address", "Billing Address"])
 
 # Build Address column if not present (combine billing parts)
 def build_address(row):
@@ -106,8 +107,7 @@ def build_address(row):
                 parts.append(part)
     return ", ".join(parts) if parts else pd.NA
 
-if existing_address_col:
-    # prefer existing Address column
+if existing_address_col and existing_address_col not in (street_col,):
     df["Address"] = df[existing_address_col].astype("string")
 else:
     df["Address"] = df.apply(build_address, axis=1)
