@@ -3,6 +3,7 @@ import openrouteservice
 from dotenv import load_dotenv
 import os
 from time import sleep
+from pathlib import Path
 
 # --- Load API key ---
 load_dotenv()
@@ -15,24 +16,76 @@ if not ORS_API_KEY:
 INPUT_FILE = "locations.xlsx"
 OUTPUT_FILE = "locations_with_coords.xlsx"
 
-client = openrouteservice.Client(key=ORS_API_KEY)
-
-# --- Helpers to find columns robustly ---
+# ensure paths are resolved relative to this script
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+INPUT_PATH = os.path.join(SCRIPT_DIR, INPUT_FILE)
+# helper to find the first matching column name (case-insensitive, fuzzy contains)
 def find_column(df, candidates):
     if df is None:
         return None
-    for c in candidates:
-        if c in df.columns:
-            return c
-    # case-insensitive match
-    lc = {col.lower(): col for col in df.columns}
-    for c in candidates:
-        if c and c.lower() in lc:
-            return lc[c.lower()]
+    # map lowercased column name -> original column name
+    col_map = {str(c).strip().lower(): c for c in df.columns}
+    # exact candidate match
+    for cand in candidates:
+        if cand is None:
+            continue
+        key = cand.strip().lower()
+        if key in col_map:
+            return col_map[key]
+    # fallback: contains match
+    for cand in candidates:
+        key = cand.strip().lower()
+        for col in df.columns:
+            if key in str(col).strip().lower():
+                return col
     return None
+# --- Add: robust loader that handles .xlsx/.xls/.csv and HTML tables ---
+def load_excel_with_engine(path):
+    from pathlib import Path
+    ext = Path(path).suffix.lower()
+    # quick sniff for HTML content
+    with open(path, "rb") as fh:
+        start = fh.read(512)
+    if start.lstrip().startswith(b"<"):
+        try:
+            tables = pd.read_html(path)
+            if tables:
+                print("Parsed HTML file; using first table as DataFrame.")
+                return tables[0]
+            raise RuntimeError("No tables found in HTML file.")
+        except Exception as e:
+            raise RuntimeError(f"Failed reading HTML file: {e}") from e
+
+    if ext == ".xlsx":
+        engine = "openpyxl"
+    elif ext == ".xls":
+        engine = "xlrd"
+    elif ext == ".csv":
+        return pd.read_csv(path)
+    else:
+        engine = None
+
+    try:
+        if engine:
+            return pd.read_excel(path, engine=engine)
+        return pd.read_excel(path)
+    except Exception as e:
+        # last-resort try read_html
+        try:
+            tables = pd.read_html(path)
+            if tables:
+                return tables[0]
+        except Exception:
+            pass
+        raise RuntimeError(f"Failed reading '{path}': {e}") from e
+
+# --- Add: initialize OpenRouteService client ---
+client = openrouteservice.Client(key=ORS_API_KEY)
 
 # --- Load Excel ---
-df = pd.read_excel(INPUT_FILE)
+if not os.path.exists(INPUT_PATH):
+    raise FileNotFoundError(f"Input file not found: {INPUT_PATH}")
+df = load_excel_with_engine(INPUT_PATH)
 
 # Identify source columns
 account_col = find_column(df, ["Account Name", "Account", "Name"])
@@ -41,7 +94,8 @@ street_col = find_column(df, ["Billing Street", "Street", "Address", "Billing Ad
 city_col = find_column(df, ["Billing City", "City"])
 state_col = find_column(df, ["Billing State/Province", "State", "Province"])
 zip_col = find_column(df, ["Billing Zip/Postal Code", "Zip", "Postal Code", "Zip/Postal Code"])
-existing_address_col = find_column(df, ["Address", "Billing Address", "Billing Street"])
+# prefer an explicit Address column only (don't treat Billing Street as the full Address)
+existing_address_col = find_column(df, ["Address", "Billing Address"])
 
 # Build Address column if not present (combine billing parts)
 def build_address(row):
@@ -53,8 +107,7 @@ def build_address(row):
                 parts.append(part)
     return ", ".join(parts) if parts else pd.NA
 
-if existing_address_col:
-    # prefer existing Address column
+if existing_address_col and existing_address_col not in (street_col,):
     df["Address"] = df[existing_address_col].astype("string")
 else:
     df["Address"] = df.apply(build_address, axis=1)
