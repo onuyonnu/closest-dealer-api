@@ -15,7 +15,7 @@ logger = logging.getLogger("closest-dealer-api")
 app = Flask(__name__)
 
 # --- ORS client ---
-ORS_API_KEY = os.getenv("eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjQxMzZlZTAyN2VhMjRhODI4MDk2NDJiMmNmZjJlODAyIiwiaCI6Im11cm11cjY0In0=")
+ORS_API_KEY = os.getenv("ORS_API_KEY")
 ors_client = Client(key=ORS_API_KEY)
 
 # --- Thread lock and timestamp for throttling ---
