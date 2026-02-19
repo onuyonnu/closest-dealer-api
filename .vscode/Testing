@@ -1,0 +1,15 @@
+from meteostat import Point, Daily, units
+from datetime import datetime
+
+# Location
+location = Point(45.4215, -75.6972)
+
+# Time period
+start = datetime(2024, 1, 1)
+end = datetime(2024, 1, 31)
+
+# Fetch daily data in Fahrenheit
+data = Daily(location, start, end)
+data = data.convert(units.imperial)
+
+print(data.fetch())
