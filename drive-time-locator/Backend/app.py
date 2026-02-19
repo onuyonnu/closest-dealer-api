@@ -1,14 +1,15 @@
 from flask import Flask, request, jsonify
 import pandas as pd
-from geopy.distance import geodesic
+# removed openrouteservice usage - using approximate distances only
+#from openrouteservice import Client
+from geopy.geocoders import Nominatim
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
 import math
-import logging
-import requests
-import threading
 import time
+import threading
+import logging
 
 # --- Logging setup ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -17,12 +18,14 @@ logger = logging.getLogger("closest-dealer-api")
 # --- Load environment variables ---
 load_dotenv()
 ORS_API_KEY = os.getenv("ORS_API_KEY")
-if not ORS_API_KEY:
-    raise ValueError("ORS_API_KEY not set in environment variables")
+# ORS_API_KEY is optional now because we use approximate-only mode locally
 
 # --- Flask setup ---
 app = Flask(__name__)
 CORS(app)
+
+# --- ORS client ---
+# client = openrouteservice.Client(key=ORS_API_KEY)  # removed - not used in approximate-only mode
 
 # --- Load Excel file ---
 EXCEL_FILE = "locations_with_coords.xlsx"
@@ -39,21 +42,6 @@ for col in required_cols:
 if "Phone" not in df.columns:
     df["Phone"] = ""
 
-# --- Throttling for ORS requests ---
-throttle_lock = threading.Lock()
-last_request_time = 0
-THROTTLE_INTERVAL = 1  # seconds between ORS requests
-
-def throttled_get(url, params=None, timeout=10):
-    global last_request_time
-    with throttle_lock:
-        elapsed = time.time() - last_request_time
-        if elapsed < THROTTLE_INTERVAL:
-            time.sleep(THROTTLE_INTERVAL - elapsed)
-        resp = requests.get(url, params=params, timeout=timeout)
-        last_request_time = time.time()
-    return resp
-
 # --- Haversine ---
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
@@ -64,32 +52,41 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
+# --- Thread lock for Nominatim throttling ---
+geocode_lock = threading.Lock()
+last_geocode_time = 0
+
+def safe_geocode(geolocator, query, retries=3, delay=1.0):
+    """Safe geocoding with throttling, retries, and backoff."""
+    global last_geocode_time
+
+    for attempt in range(retries):
+        try:
+            with geocode_lock:
+                elapsed = time.time() - last_geocode_time
+                if elapsed < 1.0:
+                    time.sleep(1.0 - elapsed)
+                location = geolocator.geocode(
+                    query,
+                    country_codes="us",
+                    timeout=10
+                )
+                last_geocode_time = time.time()
+            if location:
+                logger.info(f"Geocoded '{query}' -> {location.latitude}, {location.longitude}")
+                return location
+        except Exception as e:
+            logger.warning(f"Geocode attempt {attempt+1} failed for '{query}': {e}")
+            time.sleep(delay * (attempt + 1))  # exponential backoff
+    logger.error(f"Geocoding failed for '{query}' after {retries} attempts")
+    return None
+
+
 # --- Routes ---
-@app.route("/autocomplete", methods=["GET"])
-def autocomplete():
-    query = request.args.get("q", "")
-    logger.info(f"autocomplete called q='{query}'")
-    if not query:
-        return jsonify([])
+@app.route("/")
+def home():
+    return {"message": "Drive Time Locator API is running"}
 
-    url = "https://api.openrouteservice.org/geocode/autocomplete"
-    params = {
-        "api_key": ORS_API_KEY,
-        "text": query,
-        "boundary.country": "US",
-        "size": 5
-    }
-
-    try:
-        resp = throttled_get(url, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        suggestions = [feat["properties"]["label"] for feat in data.get("features", [])]
-        logger.info(f"Autocomplete suggestions: {suggestions}")
-        return jsonify(suggestions)
-    except requests.RequestException as e:
-        logger.error(f"Autocomplete error: {e}")
-        return jsonify([])
 
 @app.route("/find-closest", methods=["POST"])
 def find_closest():
@@ -98,66 +95,107 @@ def find_closest():
     logger.info(f"find-closest called from {request.remote_addr} with address: '{user_address}'")
 
     if not user_address:
+        logger.warning("No address provided in request")
         return jsonify({"error": "No address provided"}), 400
 
-    # --- Geocode user address with ORS ---
-    url = "https://api.openrouteservice.org/geocode/search"
-    params = {
-        "api_key": ORS_API_KEY,
-        "text": user_address,
-        "boundary.country": "US",
-        "size": 1
-    }
+    geolocator = Nominatim(user_agent="geoapi")
 
-    try:
-        resp = throttled_get(url, params=params, timeout=10)
-        resp.raise_for_status()
-        features = resp.json().get("features", [])
-        if not features:
-            return jsonify({"error": "Address not found"}), 400
+    # safer throttled geocoding
+    location = safe_geocode(geolocator, user_address)
+    if not location:
+        logger.error(f"Address not found or geocoding service unavailable for '{user_address}'")
+        return jsonify({"error": "Address not found or geocoding service unavailable"}), 400
 
-        user_lat, user_lon = features[0]["geometry"]["coordinates"][1], features[0]["geometry"]["coordinates"][0]
-        logger.info(f"User coords: {user_lat}, {user_lon}")
-    except requests.RequestException as e:
-        logger.error(f"Geocoding error: {e}")
-        return jsonify({"error": "Geocoding service unavailable"}), 400
+    user_lat, user_lon = location.latitude, location.longitude
+    logger.info(f"User coords: {user_lat}, {user_lon}")
 
-    # --- Approx distances ---
+    # Step 1: approximate distances (km)
     df["approx_distance"] = df.apply(
         lambda row: haversine(user_lat, user_lon, row["Latitude"], row["Longitude"]), axis=1
     )
 
-    # --- Candidates ---
+    # Step 2: choose nearest candidates by approx distance (increase window slightly then filter)
     candidates = df.sort_values("approx_distance").head(50)
+
     results = []
     for _, row in candidates.iterrows():
         dest_lat = row["Latitude"]
         dest_lon = row["Longitude"]
-        approx_km = float(row["approx_distance"])
-        approx_miles = approx_km * 0.621371
-        approx_time_min = approx_km / 80 * 60  # 80 km/h assumed
-
-        if approx_miles > 500:
+        
+        # Skip entries with invalid coordinates
+        if pd.isna(dest_lat) or pd.isna(dest_lon):
+            logger.warning(f"Skipping '{row['Name']}' - invalid coordinates")
             continue
 
+        approx_km = float(row["approx_distance"])
+        # Skip if distance calculation failed
+        if pd.isna(approx_km):
+            logger.warning(f"Skipping '{row['Name']}' - invalid distance calculation")
+            continue
+
+        approx_miles = approx_km * 0.621371
+        approx_time_min = approx_km / 80 * 60
+
+        # Log approximate values for each candidate
+        logger.info(
+            f"Candidate '{row['Name']}' at ({dest_lat}, {dest_lon}) -> approx {approx_km:.2f} km "
+            f"({approx_miles:.1f} mi), approx_time {approx_time_min:.1f} min"
+        )
+
+        # Skip candidates over 500 miles
+        if approx_miles > 500:
+            logger.info(f"Skipping '{row['Name']}' (approx {approx_miles:.1f} mi > 500 mi)")
+            continue
+
+        # Clean phone number - replace NaN with empty string
         phone = str(row.get("Phone", "")) if not pd.isna(row.get("Phone")) else ""
+
+        # Use approximate values directly (no ORS routing)
         results.append({
-            "name": str(row["Name"]),
+            "name": str(row["Name"]),  # Convert to string to handle numeric names
             "phone": phone,
             "drive_time": round(approx_time_min, 1),
             "distance_km": round(approx_km, 2)
         })
 
     results.sort(key=lambda x: x["drive_time"])
-    return jsonify(results[:5])
+    final_results = results[:5]
+    logger.info(f"Returning top {len(final_results)} results (approximate only)")
+    return jsonify(final_results)
+
+
+@app.route("/autocomplete", methods=["GET"])
+def autocomplete():
+    query = request.args.get("q", "")
+    logger.info(f"autocomplete called q='{query}'")
+    if not query:
+        return jsonify([])
+
+    geolocator = Nominatim(user_agent="geoapi")
+    suggestions = []
+
+    try:
+        with geocode_lock:
+            elapsed = time.time() - last_geocode_time
+            if elapsed < 1.0:
+                time.sleep(1.0 - elapsed)
+            locations = geolocator.geocode(
+                query,
+                country_codes="us",
+                exactly_one=False,
+                limit=5,
+                timeout=10
+            )
+    except Exception as e:
+        logger.error(f"Autocomplete error: {e}")
+        return jsonify([])
+
+    if locations:
+        suggestions = [loc.address for loc in locations]
+        logger.info(f"Autocomplete suggestions: {suggestions}")
+
+    return jsonify(suggestions)
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
-
-
-
-
-
-
-
