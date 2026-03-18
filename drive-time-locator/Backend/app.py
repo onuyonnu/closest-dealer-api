@@ -103,6 +103,49 @@ def safe_geocode(geolocator, query, retries=3, delay=1.0):
     return None
 
 
+def safe_autocomplete_geocode(geolocator, query, retries=3, delay=1.0, limit=5):
+    """Safe autocomplete geocoding with throttling, retries, and ORS fallback."""
+    global last_geocode_time
+
+    for attempt in range(retries):
+        try:
+            with geocode_lock:
+                elapsed = time.time() - last_geocode_time
+                if elapsed < 1.0:
+                    time.sleep(1.0 - elapsed)
+                locations = geolocator.geocode(
+                    query,
+                    country_codes="us",
+                    exactly_one=False,
+                    limit=limit,
+                    timeout=10
+                )
+                last_geocode_time = time.time()
+            if locations:
+                logger.info(f"Nominatim autocomplete for '{query}': {len(locations)} suggestions")
+                return [loc.address for loc in locations]
+        except Exception as e:
+            logger.warning(f"Autocomplete attempt {attempt+1} failed for '{query}': {e}")
+            time.sleep(delay * (attempt + 1))  # exponential backoff
+    
+    logger.error(f"Autocomplete failed for '{query}' after {retries} attempts with Nominatim")
+    
+    # Fallback to ORS if available
+    if client:
+        logger.info(f"Attempting ORS autocomplete fallback for '{query}'")
+        try:
+            ors_results = client.pelias_search(text=query, size=limit, sources=['osm'])
+            suggestions = [feature['properties']['label'] for feature in ors_results['features']]
+            logger.info(f"ORS autocomplete for '{query}': {len(suggestions)} suggestions")
+            return suggestions
+        except Exception as e:
+            logger.warning(f"ORS autocomplete failed for '{query}': {e}")
+    else:
+        logger.warning(f"No ORS client available for autocomplete fallback")
+    
+    return []
+
+
 # --- Routes ---
 @app.route("/")
 def home():
@@ -193,37 +236,7 @@ def autocomplete():
         return jsonify([])
 
     geolocator = Nominatim(user_agent="geoapi")
-    suggestions = []
-
-    try:
-        with geocode_lock:
-            elapsed = time.time() - last_geocode_time
-            if elapsed < 1.0:
-                time.sleep(1.0 - elapsed)
-            locations = geolocator.geocode(
-                query,
-                country_codes="us",
-                exactly_one=False,
-                limit=5,
-                timeout=10
-            )
-            last_geocode_time = time.time()
-    except Exception as e:
-        logger.error(f"Nominatim autocomplete error: {e}")
-        locations = None
-
-    if locations:
-        suggestions = [loc.address for loc in locations]
-        logger.info(f"Nominatim autocomplete suggestions: {suggestions}")
-    else:
-        # Fallback to ORS if available
-        if client:
-            try:
-                ors_results = client.pelias_search(text=query, size=5, sources=['osm'])
-                suggestions = [feature['properties']['label'] for feature in ors_results['features']]
-                logger.info(f"ORS autocomplete suggestions: {suggestions}")
-            except Exception as e:
-                logger.error(f"ORS autocomplete error: {e}")
+    suggestions = safe_autocomplete_geocode(geolocator, query)
 
     return jsonify(suggestions)
 
