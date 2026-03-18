@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
 import pandas as pd
-# removed openrouteservice usage - using approximate distances only
-#from openrouteservice import Client
+from openrouteservice import Client
 from geopy.geocoders import Nominatim
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -25,7 +24,9 @@ app = Flask(__name__)
 CORS(app)
 
 # --- ORS client ---
-# client = openrouteservice.Client(key=ORS_API_KEY)  # removed - not used in approximate-only mode
+client = None
+if ORS_API_KEY:
+    client = Client(key=ORS_API_KEY)
 
 # --- Load Excel file ---
 EXCEL_FILE = "locations_with_coords.xlsx"
@@ -74,11 +75,25 @@ def safe_geocode(geolocator, query, retries=3, delay=1.0):
                 last_geocode_time = time.time()
             if location:
                 logger.info(f"Geocoded '{query}' -> {location.latitude}, {location.longitude}")
-                return location
+                return {'lat': location.latitude, 'lon': location.longitude, 'address': location.address}
         except Exception as e:
             logger.warning(f"Geocode attempt {attempt+1} failed for '{query}': {e}")
             time.sleep(delay * (attempt + 1))  # exponential backoff
-    logger.error(f"Geocoding failed for '{query}' after {retries} attempts")
+    logger.error(f"Geocoding failed for '{query}' after {retries} attempts with Nominatim")
+    
+    # Fallback to ORS if available
+    if client:
+        try:
+            ors_result = client.pelias_search(text=query, size=1, sources=['osm'])
+            if ors_result['features']:
+                feature = ors_result['features'][0]
+                lon, lat = feature['geometry']['coordinates']  # GeoJSON: [lon, lat]
+                address = feature['properties']['label']
+                logger.info(f"ORS geocoded '{query}' -> {lat}, {lon}")
+                return {'lat': lat, 'lon': lon, 'address': address}
+        except Exception as e:
+            logger.warning(f"ORS geocoding failed for '{query}': {e}")
+    
     return None
 
 
@@ -106,7 +121,7 @@ def find_closest():
         logger.error(f"Address not found or geocoding service unavailable for '{user_address}'")
         return jsonify({"error": "Address not found or geocoding service unavailable"}), 400
 
-    user_lat, user_lon = location.latitude, location.longitude
+    user_lat, user_lon = location['lat'], location['lon']
     logger.info(f"User coords: {user_lat}, {user_lon}")
 
     # Step 1: approximate distances (km)
@@ -186,13 +201,23 @@ def autocomplete():
                 limit=5,
                 timeout=10
             )
+            last_geocode_time = time.time()
     except Exception as e:
-        logger.error(f"Autocomplete error: {e}")
-        return jsonify([])
+        logger.error(f"Nominatim autocomplete error: {e}")
+        locations = None
 
     if locations:
         suggestions = [loc.address for loc in locations]
-        logger.info(f"Autocomplete suggestions: {suggestions}")
+        logger.info(f"Nominatim autocomplete suggestions: {suggestions}")
+    else:
+        # Fallback to ORS if available
+        if client:
+            try:
+                ors_results = client.pelias_search(text=query, size=5, sources=['osm'])
+                suggestions = [feature['properties']['label'] for feature in ors_results['features']]
+                logger.info(f"ORS autocomplete suggestions: {suggestions}")
+            except Exception as e:
+                logger.error(f"ORS autocomplete error: {e}")
 
     return jsonify(suggestions)
 
