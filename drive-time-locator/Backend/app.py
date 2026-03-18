@@ -88,7 +88,7 @@ def safe_geocode(geolocator, query, retries=3, delay=1.0):
     if client:
         logger.info(f"Attempting ORS geocoding fallback for '{query}'")
         try:
-            ors_result = client.pelias_search(text=query, size=1, sources=['osm'])
+            ors_result = client.pelias_search(text=query, size=1, sources=['osm'], boundary_country='US')
             if ors_result['features']:
                 feature = ors_result['features'][0]
                 lon, lat = feature['geometry']['coordinates']  # GeoJSON: [lon, lat]
@@ -134,7 +134,7 @@ def safe_autocomplete_geocode(geolocator, query, retries=3, delay=1.0, limit=5):
     if client:
         logger.info(f"Attempting ORS autocomplete fallback for '{query}'")
         try:
-            ors_results = client.pelias_search(text=query, size=limit, sources=['osm'])
+            ors_results = client.pelias_search(text=query, size=limit, sources=['osm'], boundary_country='US')
             suggestions = [feature['properties']['label'] for feature in ors_results['features']]
             logger.info(f"ORS autocomplete for '{query}': {len(suggestions)} suggestions")
             return suggestions
