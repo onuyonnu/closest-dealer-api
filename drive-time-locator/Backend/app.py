@@ -27,6 +27,9 @@ CORS(app)
 client = None
 if ORS_API_KEY:
     client = Client(key=ORS_API_KEY)
+    logger.info("ORS client initialized for geocoding fallback")
+else:
+    logger.info("ORS API key not found - geocoding fallback disabled")
 
 # --- Load Excel file ---
 EXCEL_FILE = "locations_with_coords.xlsx"
@@ -83,6 +86,7 @@ def safe_geocode(geolocator, query, retries=3, delay=1.0):
     
     # Fallback to ORS if available
     if client:
+        logger.info(f"Attempting ORS geocoding fallback for '{query}'")
         try:
             ors_result = client.pelias_search(text=query, size=1, sources=['osm'])
             if ors_result['features']:
@@ -93,6 +97,8 @@ def safe_geocode(geolocator, query, retries=3, delay=1.0):
                 return {'lat': lat, 'lon': lon, 'address': address}
         except Exception as e:
             logger.warning(f"ORS geocoding failed for '{query}': {e}")
+    else:
+        logger.warning(f"No ORS client available for geocoding fallback")
     
     return None
 
