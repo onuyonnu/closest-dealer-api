@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
 import pandas as pd
 from openrouteservice import Client
-from geopy.geocoders import Nominatim
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
@@ -56,38 +55,16 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# --- Thread lock for Nominatim throttling ---
-geocode_lock = threading.Lock()
-last_geocode_time = 0
-
-def safe_geocode(geolocator, query, retries=3, delay=1.0):
-    """Safe geocoding with throttling, retries, and backoff."""
-    global last_geocode_time
+# --- Geocoding with ORS ---
+def safe_geocode(query, retries=3, delay=1.0):
+    """Safe geocoding using ORS with retries and backoff."""
+    if not client:
+        logger.error(f"ORS client not available for geocoding '{query}'")
+        return None
 
     for attempt in range(retries):
         try:
-            with geocode_lock:
-                elapsed = time.time() - last_geocode_time
-                if elapsed < 1.0:
-                    time.sleep(1.0 - elapsed)
-                location = geolocator.geocode(
-                    query,
-                    country_codes="us",
-                    timeout=10
-                )
-                last_geocode_time = time.time()
-            if location:
-                logger.info(f"Geocoded '{query}' -> {location.latitude}, {location.longitude}")
-                return {'lat': location.latitude, 'lon': location.longitude, 'address': location.address}
-        except Exception as e:
-            logger.warning(f"Geocode attempt {attempt+1} failed for '{query}': {e}")
-            time.sleep(delay * (attempt + 1))  # exponential backoff
-    logger.error(f"Geocoding failed for '{query}' after {retries} attempts with Nominatim")
-    
-    # Fallback to ORS if available
-    if client:
-        logger.info(f"Attempting ORS geocoding fallback for '{query}'")
-        try:
+            logger.info(f"Attempting ORS geocoding for '{query}'")
             ors_result = client.pelias_search(text=query, size=1, sources=['osm'], boundary_country='US')
             if ors_result['features']:
                 feature = ors_result['features'][0]
@@ -96,53 +73,31 @@ def safe_geocode(geolocator, query, retries=3, delay=1.0):
                 logger.info(f"ORS geocoded '{query}' -> {lat}, {lon}")
                 return {'lat': lat, 'lon': lon, 'address': address}
         except Exception as e:
-            logger.warning(f"ORS geocoding failed for '{query}': {e}")
-    else:
-        logger.warning(f"No ORS client available for geocoding fallback")
+            logger.warning(f"Geocode attempt {attempt+1} failed for '{query}': {e}")
+            time.sleep(delay * (attempt + 1))  # exponential backoff
     
+    logger.error(f"Geocoding failed for '{query}' after {retries} attempts with ORS")
     return None
 
 
-def safe_autocomplete_geocode(geolocator, query, retries=3, delay=1.0, limit=5):
-    """Safe autocomplete geocoding with throttling, retries, and ORS fallback."""
-    global last_geocode_time
+def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
+    """ORS autocomplete suggestions."""
+    if not client:
+        logger.warning(f"ORS client not available for autocomplete")
+        return []
 
     for attempt in range(retries):
         try:
-            with geocode_lock:
-                elapsed = time.time() - last_geocode_time
-                if elapsed < 1.0:
-                    time.sleep(1.0 - elapsed)
-                locations = geolocator.geocode(
-                    query,
-                    country_codes="us",
-                    exactly_one=False,
-                    limit=limit,
-                    timeout=10
-                )
-                last_geocode_time = time.time()
-            if locations:
-                logger.info(f"Nominatim autocomplete for '{query}': {len(locations)} suggestions")
-                return [loc.address for loc in locations]
-        except Exception as e:
-            logger.warning(f"Autocomplete attempt {attempt+1} failed for '{query}': {e}")
-            time.sleep(delay * (attempt + 1))  # exponential backoff
-    
-    logger.error(f"Autocomplete failed for '{query}' after {retries} attempts with Nominatim")
-    
-    # Fallback to ORS if available
-    if client:
-        logger.info(f"Attempting ORS autocomplete fallback for '{query}'")
-        try:
+            logger.info(f"Autocomplete attempt {attempt+1} for '{query}'")
             ors_results = client.pelias_search(text=query, size=limit, sources=['osm'], boundary_country='US')
             suggestions = [feature['properties']['label'] for feature in ors_results['features']]
             logger.info(f"ORS autocomplete for '{query}': {len(suggestions)} suggestions")
             return suggestions
         except Exception as e:
-            logger.warning(f"ORS autocomplete failed for '{query}': {e}")
-    else:
-        logger.warning(f"No ORS client available for autocomplete fallback")
+            logger.warning(f"Autocomplete attempt {attempt+1} failed for '{query}': {e}")
+            time.sleep(delay * (attempt + 1))  # exponential backoff
     
+    logger.error(f"Autocomplete failed for '{query}' after {retries} attempts with ORS")
     return []
 
 
@@ -162,10 +117,8 @@ def find_closest():
         logger.warning("No address provided in request")
         return jsonify({"error": "No address provided"}), 400
 
-    geolocator = Nominatim(user_agent="geoapi")
-
-    # safer throttled geocoding
-    location = safe_geocode(geolocator, user_address)
+    # Geocode using ORS
+    location = safe_geocode(user_address)
     if not location:
         logger.error(f"Address not found or geocoding service unavailable for '{user_address}'")
         return jsonify({"error": "Address not found or geocoding service unavailable"}), 400
@@ -235,9 +188,7 @@ def autocomplete():
     if not query:
         return jsonify([])
 
-    geolocator = Nominatim(user_agent="geoapi")
-    suggestions = safe_autocomplete_geocode(geolocator, query)
-
+    suggestions = ors_autocomplete(query)
     return jsonify(suggestions)
 
 
