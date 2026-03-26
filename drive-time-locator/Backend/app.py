@@ -68,65 +68,47 @@ last_autocomplete_time = 0
 AUTOCOMPLETE_MIN_INTERVAL = 2.0  # Minimum 2 seconds between autocomplete calls
 
 def safe_geocode(query, retries=3, delay=1.0):
-    """Safe geocoding using ORS search endpoint, results filtered to North America bbox."""
-    if not ORS_API_KEY:
-        logger.error(f"ORS API key not available for geocoding '{query}'")
-        return None
-
-    params = {
-        "api_key": ORS_API_KEY,
-        "text": query,
-        "size": 3,  # Request more results to account for filtering
-    }
-
-    url = "https://api.openrouteservice.org/geocode/search"
-
-    for attempt in range(retries):
-        try:
-            logger.info(f"Attempting ORS geocoding for '{query}'")
-            r = requests.get(url, params=params, timeout=10)
-            r.raise_for_status()
-            data = r.json()
-            features = data.get("features", [])
-            for feature in features:
-                lon, lat = feature["geometry"]["coordinates"]
-                # Filter to North America bounds
-                if NA_BBOX[0] <= lon <= NA_BBOX[2] and NA_BBOX[1] <= lat <= NA_BBOX[3]:
-                    address = feature["properties"].get("label")
-                    logger.info(f"ORS geocoded '{query}' -> {lat}, {lon}")
-                    return {"lat": lat, "lon": lon, "address": address}
-            logger.warning(f"No results within North America bounds for '{query}'")
-            return None
-        except Exception as e:
-            logger.warning(f"Geocode attempt {attempt+1} failed for '{query}': {e}")
-            time.sleep(delay * (attempt + 1))
-
-    logger.error(f"Geocoding failed for '{query}' after {retries} attempts with ORS")
-
-    # Fallback to ORS client if available
-    if client:
-        try:
-            ors_result = client.pelias_search(text=query, size=1)
-            if ors_result['features']:
-                feature = ors_result['features'][0]
-                lon, lat = feature['geometry']['coordinates']
-                address = feature['properties']['label']
-                logger.info(f"ORS client fallback geocoded '{query}' -> {lat}, {lon}")
-                return {'lat': lat, 'lon': lon, 'address': address}
-        except Exception as e:
-            logger.warning(f"Fallback client geocoding failed for '{query}': {e}")
-
-    # Final fallback: Nominatim (only for real geocode, not autocomplete)
+    """Safe geocoding prioritizing Nominatim, with ORS as backup."""
+    # Try Nominatim first
     try:
         geolocator = Nominatim(user_agent="geoapi")
         location = geolocator.geocode(query, country_codes="us", timeout=10)
         if location:
-            logger.info(f"Nominatim fallback geocoded '{query}' -> {location.latitude}, {location.longitude}")
+            logger.info(f"Nominatim geocoded '{query}' -> {location.latitude}, {location.longitude}")
             return {'lat': location.latitude, 'lon': location.longitude, 'address': location.address}
-        logger.warning(f"Nominatim fallback could not geocode '{query}'")
+        logger.warning(f"Nominatim could not geocode '{query}'")
     except Exception as e:
-        logger.warning(f"Nominatim fallback geocoding failed for '{query}': {e}")
+        logger.warning(f"Nominatim geocoding failed for '{query}': {e}")
 
+    # Fallback to ORS
+    if ORS_API_KEY:
+        params = {
+            "api_key": ORS_API_KEY,
+            "text": query,
+            "size": 1,
+        }
+        url = "https://api.openrouteservice.org/geocode/search"
+
+        for attempt in range(retries):
+            try:
+                logger.info(f"Attempting ORS geocoding fallback for '{query}'")
+                r = requests.get(url, params=params, timeout=10)
+                r.raise_for_status()
+                data = r.json()
+                features = data.get("features", [])
+                if features:
+                    feature = features[0]
+                    lon, lat = feature["geometry"]["coordinates"]
+                    address = feature["properties"].get("label")
+                    logger.info(f"ORS geocoded '{query}' -> {lat}, {lon}")
+                    return {"lat": lat, "lon": lon, "address": address}
+                logger.warning(f"No features returned for '{query}'")
+                return None
+            except Exception as e:
+                logger.warning(f"ORS geocoding attempt {attempt+1} failed for '{query}': {e}")
+                time.sleep(delay * (attempt + 1))
+
+    logger.error(f"All geocoding services failed for '{query}'")
     return None
 
 
