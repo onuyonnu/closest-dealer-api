@@ -65,7 +65,7 @@ def safe_geocode(query, retries=3, delay=1.0):
     for attempt in range(retries):
         try:
             logger.info(f"Attempting ORS geocoding for '{query}'")
-            ors_result = client.pelias_search(text=query, size=1, boundary={'country': 'US'})
+            ors_result = client.pelias_search(text=query, size=1, country='US')
             if ors_result['features']:
                 feature = ors_result['features'][0]
                 lon, lat = feature['geometry']['coordinates']  # GeoJSON: [lon, lat]
@@ -89,7 +89,7 @@ def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
     for attempt in range(retries):
         try:
             logger.info(f"Autocomplete attempt {attempt+1} for '{query}'")
-            ors_results = client.pelias_search(text=query, size=limit, boundary={'country': 'US'})
+            ors_results = client.pelias_search(text=query, size=limit, country='US')
             suggestions = [feature['properties']['label'] for feature in ors_results['features']]
             logger.info(f"ORS autocomplete for '{query}': {len(suggestions)} suggestions")
             return suggestions
