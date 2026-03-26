@@ -56,12 +56,8 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * c
 
 # --- Geocoding with ORS ---
-# North America bounding box: [min_lon, min_lat, max_lon, max_lat]
-# Covers US, Canada, Mexico, and Caribbean territories
-NA_BBOX = [-170, 15, -50, 85]
-
 def safe_geocode(query, retries=3, delay=1.0):
-    """Safe geocoding using ORS with retries and backoff, restricted to North America."""
+    """Safe geocoding using ORS with retries and backoff, restricted to US."""
     if not client:
         logger.error(f"ORS client not available for geocoding '{query}'")
         return None
@@ -69,7 +65,7 @@ def safe_geocode(query, retries=3, delay=1.0):
     for attempt in range(retries):
         try:
             logger.info(f"Attempting ORS geocoding for '{query}'")
-            ors_result = client.pelias_search(text=query, size=1, boundary_rect=NA_BBOX)
+            ors_result = client.pelias_search(text=query, size=1, boundary={'country': 'US'})
             if ors_result['features']:
                 feature = ors_result['features'][0]
                 lon, lat = feature['geometry']['coordinates']  # GeoJSON: [lon, lat]
@@ -85,7 +81,7 @@ def safe_geocode(query, retries=3, delay=1.0):
 
 
 def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
-    """ORS autocomplete suggestions, restricted to North America."""
+    """ORS autocomplete suggestions, restricted to US."""
     if not client:
         logger.warning(f"ORS client not available for autocomplete")
         return []
@@ -93,7 +89,7 @@ def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
     for attempt in range(retries):
         try:
             logger.info(f"Autocomplete attempt {attempt+1} for '{query}'")
-            ors_results = client.pelias_search(text=query, size=limit, boundary_rect=NA_BBOX)
+            ors_results = client.pelias_search(text=query, size=limit, boundary={'country': 'US'})
             suggestions = [feature['properties']['label'] for feature in ors_results['features']]
             logger.info(f"ORS autocomplete for '{query}': {len(suggestions)} suggestions")
             return suggestions
