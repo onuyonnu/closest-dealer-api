@@ -264,7 +264,7 @@ def autocomplete():
     if not query:
         return jsonify([])
 
-    # Rate limiting: enforce minimum 2-second interval between requests
+    # Rate limiting: enforce 2-second interval between requests
     with autocomplete_lock:
         elapsed = time.time() - last_autocomplete_time
         if elapsed < AUTOCOMPLETE_MIN_INTERVAL:
