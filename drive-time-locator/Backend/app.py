@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import pandas as pd
 import requests
 from openrouteservice import Client
+from geopy.geocoders import Nominatim
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
@@ -108,6 +109,17 @@ def safe_geocode(query, retries=3, delay=1.0):
                 return {'lat': lat, 'lon': lon, 'address': address}
         except Exception as e:
             logger.warning(f"Fallback client geocoding failed for '{query}': {e}")
+
+    # Final fallback: Nominatim (only for real geocode, not autocomplete)
+    try:
+        geolocator = Nominatim(user_agent="geoapi")
+        location = geolocator.geocode(query, country_codes="us", timeout=10)
+        if location:
+            logger.info(f"Nominatim fallback geocoded '{query}' -> {location.latitude}, {location.longitude}")
+            return {'lat': location.latitude, 'lon': location.longitude, 'address': location.address}
+        logger.warning(f"Nominatim fallback could not geocode '{query}'")
+    except Exception as e:
+        logger.warning(f"Nominatim fallback geocoding failed for '{query}': {e}")
 
     return None
 
