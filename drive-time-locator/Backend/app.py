@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import pandas as pd
+import requests
 from openrouteservice import Client
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -56,49 +57,98 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * c
 
 # --- Geocoding with ORS ---
+# North America (continent) constraint for ORS geocode
+CONTINENT = "North America"
+
 def safe_geocode(query, retries=3, delay=1.0):
-    """Safe geocoding using ORS with retries and backoff, restricted to US."""
-    if not client:
-        logger.error(f"ORS client not available for geocoding '{query}'")
+    """Safe geocoding using ORS search endpoint with continent boundary."""
+    if not ORS_API_KEY:
+        logger.error(f"ORS API key not available for geocoding '{query}'")
         return None
-#forcing a change with this line
+
+    params = {
+        "api_key": ORS_API_KEY,
+        "text": query,
+        "size": 1,
+        "boundary.continent": CONTINENT,
+    }
+
+    url = "https://api.openrouteservice.org/geocode/search"
 
     for attempt in range(retries):
         try:
-            logger.info(f"Attempting ORS geocoding for '{query}'")
-            ors_result = client.pelias_search(text=query, size=1, country=['USA', 'PRI'])
-            if ors_result['features']:
-                feature = ors_result['features'][0]
-                lon, lat = feature['geometry']['coordinates']  # GeoJSON: [lon, lat]
-                address = feature['properties']['label']
+            logger.info(f"Attempting ORS geocoding for '{query}' (continent={CONTINENT})")
+            r = requests.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            features = data.get("features", [])
+            if features:
+                feature = features[0]
+                lon, lat = feature["geometry"]["coordinates"]
+                address = feature["properties"].get("label")
                 logger.info(f"ORS geocoded '{query}' -> {lat}, {lon}")
-                return {'lat': lat, 'lon': lon, 'address': address}
+                return {"lat": lat, "lon": lon, "address": address}
+            logger.warning(f"No features returned for '{query}'")
+            return None
         except Exception as e:
             logger.warning(f"Geocode attempt {attempt+1} failed for '{query}': {e}")
-            time.sleep(delay * (attempt + 1))  # exponential backoff
-    
+            time.sleep(delay * (attempt + 1))
+
     logger.error(f"Geocoding failed for '{query}' after {retries} attempts with ORS")
+
+    # Fallback to ORS client if available
+    if client:
+        try:
+            ors_result = client.pelias_search(text=query, size=1)
+            if ors_result['features']:
+                feature = ors_result['features'][0]
+                lon, lat = feature['geometry']['coordinates']
+                address = feature['properties']['label']
+                logger.info(f"ORS client fallback geocoded '{query}' -> {lat}, {lon}")
+                return {'lat': lat, 'lon': lon, 'address': address}
+        except Exception as e:
+            logger.warning(f"Fallback client geocoding failed for '{query}': {e}")
+
     return None
 
 
 def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
-    """ORS autocomplete suggestions, restricted to US."""
-    if not client:
-        logger.warning(f"ORS client not available for autocomplete")
+    """ORS autocomplete suggestions restricted to North America with boundary.continent."""
+    if not ORS_API_KEY:
+        logger.warning(f"ORS API key not available for autocomplete")
         return []
+
+    params = {
+        "api_key": ORS_API_KEY,
+        "text": query,
+        "size": limit,
+        "boundary.continent": CONTINENT,
+    }
+    url = "https://api.openrouteservice.org/geocode/autocomplete"
 
     for attempt in range(retries):
         try:
-            logger.info(f"Autocomplete attempt {attempt+1} for '{query}'")
-            ors_results = client.pelias_search(text=query, size=limit, country=['USA', 'PRI'])
-            suggestions = [feature['properties']['label'] for feature in ors_results['features']]
+            logger.info(f"Autocomplete attempt {attempt+1} for '{query}' (continent={CONTINENT})")
+            r = requests.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            suggestions = [feature['properties'].get('label') for feature in data.get('features', []) if feature.get('properties')]
             logger.info(f"ORS autocomplete for '{query}': {len(suggestions)} suggestions")
             return suggestions
         except Exception as e:
             logger.warning(f"Autocomplete attempt {attempt+1} failed for '{query}': {e}")
-            time.sleep(delay * (attempt + 1))  # exponential backoff
-    
+            time.sleep(delay * (attempt + 1))
+
     logger.error(f"Autocomplete failed for '{query}' after {retries} attempts with ORS")
+
+    # Fallback to old client
+    if client:
+        try:
+            ors_results = client.pelias_search(text=query, size=limit)
+            return [feature['properties']['label'] for feature in ors_results['features']]
+        except Exception as e:
+            logger.warning(f"Fallback client autocomplete failed for '{query}': {e}")
+
     return []
 
 
