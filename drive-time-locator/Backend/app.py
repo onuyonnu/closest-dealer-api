@@ -61,6 +61,7 @@ def safe_geocode(query, retries=3, delay=1.0):
     if not client:
         logger.error(f"ORS client not available for geocoding '{query}'")
         return None
+#forcing a change with this line
 
     for attempt in range(retries):
         try:
