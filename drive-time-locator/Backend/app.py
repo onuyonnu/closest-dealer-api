@@ -58,11 +58,16 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * c
 
 # --- Geocoding with ORS ---
-# North America (continent) constraint for ORS geocode
-CONTINENT = "North America"
+# North America bounding box: [min_lon, min_lat, max_lon, max_lat]
+NA_BBOX = [-170.0, 5.0, -50.0, 85.0]
+
+# Autocomplete rate limiting
+autocomplete_lock = threading.Lock()
+last_autocomplete_time = 0
+AUTOCOMPLETE_MIN_INTERVAL = 2.0  # Minimum 2 seconds between autocomplete calls
 
 def safe_geocode(query, retries=3, delay=1.0):
-    """Safe geocoding using ORS search endpoint with continent boundary."""
+    """Safe geocoding using ORS search endpoint, results filtered to North America bbox."""
     if not ORS_API_KEY:
         logger.error(f"ORS API key not available for geocoding '{query}'")
         return None
@@ -70,26 +75,26 @@ def safe_geocode(query, retries=3, delay=1.0):
     params = {
         "api_key": ORS_API_KEY,
         "text": query,
-        "size": 1,
-        "boundary.continent": CONTINENT,
+        "size": 3,  # Request more results to account for filtering
     }
 
     url = "https://api.openrouteservice.org/geocode/search"
 
     for attempt in range(retries):
         try:
-            logger.info(f"Attempting ORS geocoding for '{query}' (continent={CONTINENT})")
+            logger.info(f"Attempting ORS geocoding for '{query}'")
             r = requests.get(url, params=params, timeout=10)
             r.raise_for_status()
             data = r.json()
             features = data.get("features", [])
-            if features:
-                feature = features[0]
+            for feature in features:
                 lon, lat = feature["geometry"]["coordinates"]
-                address = feature["properties"].get("label")
-                logger.info(f"ORS geocoded '{query}' -> {lat}, {lon}")
-                return {"lat": lat, "lon": lon, "address": address}
-            logger.warning(f"No features returned for '{query}'")
+                # Filter to North America bounds
+                if NA_BBOX[0] <= lon <= NA_BBOX[2] and NA_BBOX[1] <= lat <= NA_BBOX[3]:
+                    address = feature["properties"].get("label")
+                    logger.info(f"ORS geocoded '{query}' -> {lat}, {lon}")
+                    return {"lat": lat, "lon": lon, "address": address}
+            logger.warning(f"No results within North America bounds for '{query}'")
             return None
         except Exception as e:
             logger.warning(f"Geocode attempt {attempt+1} failed for '{query}': {e}")
@@ -125,7 +130,7 @@ def safe_geocode(query, retries=3, delay=1.0):
 
 
 def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
-    """ORS autocomplete suggestions restricted to North America with boundary.continent."""
+    """ORS autocomplete suggestions, results filtered to North America bbox."""
     if not ORS_API_KEY:
         logger.warning(f"ORS API key not available for autocomplete")
         return []
@@ -133,18 +138,24 @@ def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
     params = {
         "api_key": ORS_API_KEY,
         "text": query,
-        "size": limit,
-        "boundary.continent": CONTINENT,
+        "size": limit * 2,  # Request more to account for filtering
     }
     url = "https://api.openrouteservice.org/geocode/autocomplete"
 
     for attempt in range(retries):
         try:
-            logger.info(f"Autocomplete attempt {attempt+1} for '{query}' (continent={CONTINENT})")
+            logger.info(f"Autocomplete attempt {attempt+1} for '{query}'")
             r = requests.get(url, params=params, timeout=10)
             r.raise_for_status()
             data = r.json()
-            suggestions = [feature['properties'].get('label') for feature in data.get('features', []) if feature.get('properties')]
+            suggestions = []
+            for feature in data.get('features', []):
+                lon, lat = feature['geometry']['coordinates']
+                # Filter to North America bounds
+                if NA_BBOX[0] <= lon <= NA_BBOX[2] and NA_BBOX[1] <= lat <= NA_BBOX[3]:
+                    suggestions.append(feature['properties'].get('label'))
+                if len(suggestions) >= limit:
+                    break
             logger.info(f"ORS autocomplete for '{query}': {len(suggestions)} suggestions")
             return suggestions
         except Exception as e:
@@ -246,10 +257,21 @@ def find_closest():
 
 @app.route("/autocomplete", methods=["GET"])
 def autocomplete():
+    global last_autocomplete_time
+    
     query = request.args.get("q", "")
     logger.info(f"autocomplete called q='{query}'")
     if not query:
         return jsonify([])
+
+    # Rate limiting: enforce minimum 2-second interval between requests
+    with autocomplete_lock:
+        elapsed = time.time() - last_autocomplete_time
+        if elapsed < AUTOCOMPLETE_MIN_INTERVAL:
+            wait_time = AUTOCOMPLETE_MIN_INTERVAL - elapsed
+            logger.info(f"Autocomplete rate limit: waiting {wait_time:.2f}s")
+            time.sleep(wait_time)
+        last_autocomplete_time = time.time()
 
     suggestions = ors_autocomplete(query)
     return jsonify(suggestions)
