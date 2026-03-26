@@ -59,7 +59,8 @@ def haversine(lat1, lon1, lat2, lon2):
 
 # --- Geocoding with ORS ---
 # North America bounding box: [min_lon, min_lat, max_lon, max_lat]
-NA_BBOX = [-170.0, 5.0, -50.0, 85.0]
+# Extended to include Caribbean territories like Puerto Rico
+NA_BBOX = [-180.0, 5.0, -30.0, 85.0]
 
 # Autocomplete rate limiting
 autocomplete_lock = threading.Lock()
@@ -151,12 +152,16 @@ def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
             suggestions = []
             for feature in data.get('features', []):
                 lon, lat = feature['geometry']['coordinates']
+                label = feature['properties'].get('label')
                 # Filter to North America bounds
                 if NA_BBOX[0] <= lon <= NA_BBOX[2] and NA_BBOX[1] <= lat <= NA_BBOX[3]:
-                    suggestions.append(feature['properties'].get('label'))
+                    suggestions.append(label)
+                    logger.debug(f"  Included: {label} ({lat}, {lon})")
+                else:
+                    logger.debug(f"  Filtered out: {label} ({lat}, {lon}) - outside bounds")
                 if len(suggestions) >= limit:
                     break
-            logger.info(f"ORS autocomplete for '{query}': {len(suggestions)} suggestions")
+            logger.info(f"ORS autocomplete for '{query}': {len(suggestions)} suggestions (out of {len(data.get('features', []))} features)")
             return suggestions
         except Exception as e:
             logger.warning(f"Autocomplete attempt {attempt+1} failed for '{query}': {e}")
