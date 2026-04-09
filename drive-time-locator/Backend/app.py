@@ -224,12 +224,19 @@ def find_closest():
 
         phone = str(row.get("Phone", "")) if not pd.isna(row.get("Phone")) else ""
 
-        results.append({
+        # Handle optional Notes field
+        notes = str(row.get("Notes", "")) if not pd.isna(row.get("Notes")) else ""
+
+        result = {
             "name": str(row["Name"]),
             "phone": phone,
             "drive_time": round(approx_time_min, 1),
             "distance_km": round(approx_km, 2)
-        })
+        }
+        if notes:
+            result["notes"] = notes
+
+        results.append(result)
 
         accepted_summaries.append(
             f"{row['Name']} ({approx_km:.2f} km, {approx_miles:.1f} mi, {approx_time_min:.1f} min)"
