@@ -132,12 +132,16 @@
       items.forEach(it => {
         const card = document.createElement('div');
         card.className = 'location-card';
-        card.innerHTML = `
+        let html = `
           <div><b>${it.name}</b></div>
           <div>Phone: ${it.phone || 'N/A'}</div>
           <div>Drive time: ${it.drive_time} min (${(it.drive_time/60).toFixed(2)} hrs)</div>
           <div>Distance: ${it.distance_km} km (${kmToMiles(it.distance_km)} mi)</div>
         `;
+        if (it.notes) {
+          html += `<div><i>Note: ${it.notes}</i></div>`;
+        }
+        card.innerHTML = html;
         out.appendChild(card);
       });
     }
