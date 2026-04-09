@@ -187,57 +187,65 @@ def find_closest():
     user_lat, user_lon = location['lat'], location['lon']
     logger.info(f"User coords: {user_lat}, {user_lon}")
 
-    # Step 1: approximate distances (km)
-    df["approx_distance"] = df.apply(
-        lambda row: haversine(user_lat, user_lon, row["Latitude"], row["Longitude"]), axis=1
+    # Step 1: approximate distances (km) on a request-local copy to avoid mutating global data
+    distance_df = df.assign(
+        approx_distance=df.apply(
+            lambda row: haversine(user_lat, user_lon, row["Latitude"], row["Longitude"]), axis=1
+        )
     )
 
-    # Step 2: choose nearest candidates by approx distance (increase window slightly then filter)
-    candidates = df.sort_values("approx_distance").head(50)
+    # Step 2: choose nearest candidates by approx distance
+    candidates = distance_df.sort_values("approx_distance").head(50)
 
     results = []
+    accepted_summaries = []
+    skipped_summaries = []
+
     for _, row in candidates.iterrows():
         dest_lat = row["Latitude"]
         dest_lon = row["Longitude"]
-        
-        # Skip entries with invalid coordinates
+
         if pd.isna(dest_lat) or pd.isna(dest_lon):
-            logger.warning(f"Skipping '{row['Name']}' - invalid coordinates")
+            skipped_summaries.append(f"{row['Name']}: invalid coordinates")
             continue
 
-        approx_km = float(row["approx_distance"])
-        # Skip if distance calculation failed
+        approx_km = row["approx_distance"]
         if pd.isna(approx_km):
-            logger.warning(f"Skipping '{row['Name']}' - invalid distance calculation")
+            skipped_summaries.append(f"{row['Name']}: invalid distance calculation")
             continue
 
+        approx_km = float(approx_km)
         approx_miles = approx_km * 0.621371
         approx_time_min = approx_km / 80 * 60
 
-        # Log approximate values for each candidate
-        logger.info(
-            f"Candidate '{row['Name']}' at ({dest_lat}, {dest_lon}) -> approx {approx_km:.2f} km "
-            f"({approx_miles:.1f} mi), approx_time {approx_time_min:.1f} min"
-        )
-
-        # Skip candidates over 500 miles
         if approx_miles > 500:
-            logger.info(f"Skipping '{row['Name']}' (approx {approx_miles:.1f} mi > 500 mi)")
+            skipped_summaries.append(f"{row['Name']}: too far ({approx_miles:.1f} mi)")
             continue
 
-        # Clean phone number - replace NaN with empty string
         phone = str(row.get("Phone", "")) if not pd.isna(row.get("Phone")) else ""
 
-        # Use approximate values directly (no ORS routing)
         results.append({
-            "name": str(row["Name"]),  # Convert to string to handle numeric names
+            "name": str(row["Name"]),
             "phone": phone,
             "drive_time": round(approx_time_min, 1),
             "distance_km": round(approx_km, 2)
         })
 
+        accepted_summaries.append(
+            f"{row['Name']} ({approx_km:.2f} km, {approx_miles:.1f} mi, {approx_time_min:.1f} min)"
+        )
+
     results.sort(key=lambda x: x["drive_time"])
     final_results = results[:5]
+
+    accepted_text = "\n".join(f"  - {item}" for item in accepted_summaries) or "  - none"
+    skipped_text = "\n".join(f"  - {item}" for item in skipped_summaries) or "  - none"
+
+    logger.info(
+        "find-closest candidate summary:\naccepted:\n%s\nskipped:\n%s",
+        accepted_text,
+        skipped_text,
+    )
     logger.info(f"Returning top {len(final_results)} results (approximate only)")
     return jsonify(final_results)
 
