@@ -245,14 +245,16 @@ def find_closest():
     results.sort(key=lambda x: x["drive_time"])
     final_results = results[:5]
 
-    accepted_text = "\n".join(f"  - {item}" for item in accepted_summaries) or "  - none"
-    skipped_text = "\n".join(f"  - {item}" for item in skipped_summaries) or "  - none"
+    if not final_results:
+        accepted_text = "\n".join(f"  - {item}" for item in accepted_summaries) or "  - none"
+        skipped_text = "\n".join(f"  - {item}" for item in skipped_summaries) or "  - none"
 
-    logger.info(
-        "find-closest candidate summary:\naccepted:\n%s\nskipped:\n%s",
-        accepted_text,
-        skipped_text,
-    )
+        logger.info(
+            "find-closest candidate summary (no dealers met criteria):\naccepted:\n%s\nskipped:\n%s",
+            accepted_text,
+            skipped_text,
+        )
+
     logger.info(f"Returning top {len(final_results)} results (approximate only)")
     return jsonify(final_results)
 
