@@ -67,21 +67,60 @@ autocomplete_lock = threading.Lock()
 last_autocomplete_time = 0
 AUTOCOMPLETE_MIN_INTERVAL = 2.0  # Minimum 2 seconds between autocomplete calls
 
+# Geocoding cache and rate limiting
+geocode_cache = {}
+GEOCODE_CACHE_MAX_SIZE = 1000
+geocode_lock = threading.Lock()
+last_geocode_time = 0
+GEOCODE_MIN_INTERVAL = 1.0  # Minimum 1 second between ORS geocoding calls
+
 def safe_geocode(query, retries=3, delay=1.0):
     """Safe geocoding prioritizing Nominatim, with ORS as backup."""
+    # Check cache first
+    cache_key = query.strip().lower()
+    with geocode_lock:
+        if cache_key in geocode_cache:
+            cached_result = geocode_cache[cache_key]
+            logger.info(f"Using cached geocoding result for '{query}'")
+            return cached_result
+
     # Try Nominatim first
     try:
         geolocator = Nominatim(user_agent="geoapi")
-        location = geolocator.geocode(query, country_codes="us", timeout=10)
+        # For zip codes, try different approaches
+        if query.strip().isdigit() and len(query.strip()) == 5:
+            # Looks like a US zip code, try with "US" appended
+            location = geolocator.geocode(f"{query}, USA", timeout=10)
+        else:
+            location = geolocator.geocode(query, country_codes="us", timeout=10)
+
         if location:
+            result = {'lat': location.latitude, 'lon': location.longitude, 'address': location.address}
+            # Cache the result
+            with geocode_lock:
+                if len(geocode_cache) >= GEOCODE_CACHE_MAX_SIZE:
+                    # Remove oldest entry (simple FIFO)
+                    oldest_key = next(iter(geocode_cache))
+                    del geocode_cache[oldest_key]
+                geocode_cache[cache_key] = result
             logger.info(f"Nominatim geocoded '{query}' -> {location.latitude}, {location.longitude}")
-            return {'lat': location.latitude, 'lon': location.longitude, 'address': location.address}
+            return result
         logger.warning(f"Nominatim could not geocode '{query}'")
     except Exception as e:
         logger.warning(f"Nominatim geocoding failed for '{query}': {e}")
 
-    # Fallback to ORS
+    # Fallback to ORS with rate limiting
     if ORS_API_KEY:
+        # Rate limiting for ORS
+        with geocode_lock:
+            current_time = time.time()
+            time_since_last = current_time - last_geocode_time
+            if time_since_last < GEOCODE_MIN_INTERVAL:
+                sleep_time = GEOCODE_MIN_INTERVAL - time_since_last
+                logger.info(f"Rate limiting ORS geocoding, sleeping {sleep_time:.1f}s")
+                time.sleep(sleep_time)
+            last_geocode_time = time.time()
+
         params = {
             "api_key": ORS_API_KEY,
             "text": query,
@@ -100,10 +139,32 @@ def safe_geocode(query, retries=3, delay=1.0):
                     feature = features[0]
                     lon, lat = feature["geometry"]["coordinates"]
                     address = feature["properties"].get("label")
+                    result = {"lat": lat, "lon": lon, "address": address}
+                    # Cache the result
+                    with geocode_lock:
+                        if len(geocode_cache) >= GEOCODE_CACHE_MAX_SIZE:
+                            oldest_key = next(iter(geocode_cache))
+                            del geocode_cache[oldest_key]
+                        geocode_cache[cache_key] = result
                     logger.info(f"ORS geocoded '{query}' -> {lat}, {lon}")
-                    return {"lat": lat, "lon": lon, "address": address}
+                    return result
                 logger.warning(f"No features returned for '{query}'")
                 return None
+            except requests.exceptions.HTTPError as e:
+                if r.status_code == 429:
+                    logger.warning(f"ORS rate limit hit (429) for '{query}', attempt {attempt+1}")
+                    if attempt < retries - 1:
+                        # Exponential backoff for rate limits
+                        backoff_time = delay * (2 ** attempt)
+                        logger.info(f"Backing off for {backoff_time}s before retry")
+                        time.sleep(backoff_time)
+                        continue
+                    else:
+                        logger.error(f"ORS rate limit persisted for '{query}' after {retries} attempts")
+                        return None
+                else:
+                    logger.warning(f"ORS HTTP error {r.status_code} for '{query}': {e}")
+                    time.sleep(delay * (attempt + 1))
             except Exception as e:
                 logger.warning(f"ORS geocoding attempt {attempt+1} failed for '{query}': {e}")
                 time.sleep(delay * (attempt + 1))
@@ -117,6 +178,24 @@ def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
     if not ORS_API_KEY:
         logger.warning(f"ORS API key not available for autocomplete")
         return []
+
+    # Simple cache for autocomplete results
+    cache_key = f"autocomplete_{query.strip().lower()}_{limit}"
+    with geocode_lock:  # Reuse the same lock
+        if cache_key in geocode_cache:
+            cached_result = geocode_cache[cache_key]
+            logger.info(f"Using cached autocomplete result for '{query}'")
+            return cached_result
+
+    # Rate limiting
+    with autocomplete_lock:
+        current_time = time.time()
+        time_since_last = current_time - last_autocomplete_time
+        if time_since_last < AUTOCOMPLETE_MIN_INTERVAL:
+            sleep_time = AUTOCOMPLETE_MIN_INTERVAL - time_since_last
+            logger.info(f"Rate limiting autocomplete, sleeping {sleep_time:.1f}s")
+            time.sleep(sleep_time)
+        last_autocomplete_time = time.time()
 
     params = {
         "api_key": ORS_API_KEY,
@@ -144,7 +223,29 @@ def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
                 if len(suggestions) >= limit:
                     break
             logger.info(f"ORS autocomplete for '{query}': {len(suggestions)} suggestions (out of {len(data.get('features', []))} features)")
+
+            # Cache the result
+            with geocode_lock:
+                if len(geocode_cache) >= GEOCODE_CACHE_MAX_SIZE:
+                    oldest_key = next(iter(geocode_cache))
+                    del geocode_cache[oldest_key]
+                geocode_cache[cache_key] = suggestions
+
             return suggestions
+        except requests.exceptions.HTTPError as e:
+            if r.status_code == 429:
+                logger.warning(f"ORS autocomplete rate limit hit (429) for '{query}', attempt {attempt+1}")
+                if attempt < retries - 1:
+                    backoff_time = delay * (2 ** attempt)
+                    logger.info(f"Backing off for {backoff_time}s before retry")
+                    time.sleep(backoff_time)
+                    continue
+                else:
+                    logger.error(f"ORS autocomplete rate limit persisted for '{query}' after {retries} attempts")
+                    return []
+            else:
+                logger.warning(f"ORS autocomplete HTTP error {r.status_code} for '{query}': {e}")
+                time.sleep(delay * (attempt + 1))
         except Exception as e:
             logger.warning(f"Autocomplete attempt {attempt+1} failed for '{query}': {e}")
             time.sleep(delay * (attempt + 1))
@@ -155,7 +256,14 @@ def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
     if client:
         try:
             ors_results = client.pelias_search(text=query, size=limit)
-            return [feature['properties']['label'] for feature in ors_results['features']]
+            result = [feature['properties']['label'] for feature in ors_results['features']]
+            # Cache the fallback result too
+            with geocode_lock:
+                if len(geocode_cache) >= GEOCODE_CACHE_MAX_SIZE:
+                    oldest_key = next(iter(geocode_cache))
+                    del geocode_cache[oldest_key]
+                geocode_cache[cache_key] = result
+            return result
         except Exception as e:
             logger.warning(f"Fallback client autocomplete failed for '{query}': {e}")
 
