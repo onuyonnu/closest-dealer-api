@@ -76,6 +76,8 @@ GEOCODE_MIN_INTERVAL = 1.0  # Minimum 1 second between ORS geocoding calls
 
 def safe_geocode(query, retries=3, delay=1.0):
     """Safe geocoding prioritizing Nominatim, with ORS as backup."""
+    global last_geocode_time
+    
     # Check cache first
     cache_key = query.strip().lower()
     with geocode_lock:
@@ -108,6 +110,10 @@ def safe_geocode(query, retries=3, delay=1.0):
         logger.warning(f"Nominatim could not geocode '{query}'")
     except Exception as e:
         logger.warning(f"Nominatim geocoding failed for '{query}': {e}")
+        # If it's a 429 error from Nominatim, add a small delay before falling back
+        if "429" in str(e):
+            logger.info("Nominatim rate limited, adding delay before ORS fallback")
+            time.sleep(2)
 
     # Fallback to ORS with rate limiting
     if ORS_API_KEY:
@@ -175,6 +181,8 @@ def safe_geocode(query, retries=3, delay=1.0):
 
 def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
     """ORS autocomplete suggestions, results filtered to North America bbox."""
+    global last_autocomplete_time
+    
     if not ORS_API_KEY:
         logger.warning(f"ORS API key not available for autocomplete")
         return []
