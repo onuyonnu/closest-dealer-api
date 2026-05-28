@@ -161,9 +161,18 @@ def save_geocode_to_db(address, latitude, longitude):
 
 def verify_slack_request(req):
     if not signature_verifier:
+        logger.warning("Slack signature verifier not configured")
         return False
-    body = req.get_data()
-    return signature_verifier.is_valid_request(body, req.headers)
+    try:
+        body = req.get_data()
+        is_valid = signature_verifier.is_valid_request(body, req.headers)
+        if not is_valid:
+            logger.warning(f"Slack signature verification failed")
+        return is_valid
+    except Exception as e:
+        logger.error(f"Slack signature verification error: {e}")
+        return False
+
 
 
 def save_dealer_to_db(name, phone, address, latitude, longitude, notes):
@@ -495,7 +504,7 @@ def slack_commands():
     trigger_id = request.form.get("trigger_id")
     channel_id = request.form.get("channel_id")
 
-    if command != "/add dealer":
+    if command != "/add_dealer":
         return jsonify({"text": "Unsupported command"}), 400
     if not slack_client:
         return jsonify({"text": "Slack bot is not configured."}), 500
