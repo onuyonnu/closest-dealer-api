@@ -796,6 +796,7 @@ def handle_add_dealer_modal_submission(ack, body, client, logger):
 
 @slack_app.view("dealer_edit_select")
 def handle_dealer_select(ack, body, client, logger):
+    # Acknowledge immediately with a lightweight loading view to avoid Slack timeouts
     values = body["view"]["state"]["values"]
     selected = values["dealer_select_block"]["dealer_select"].get("selected_option")
     if not selected:
@@ -803,66 +804,97 @@ def handle_dealer_select(ack, body, client, logger):
         return
 
     dealer_id = selected["value"]
-    dealer = get_dealer_by_id(dealer_id)
-    if not dealer:
-        ack(response_action="errors", errors={"dealer_select_block": "Selected dealer could not be found."})
-        return
 
-    metadata = json.loads(body["view"].get("private_metadata", "{}"))
-    channel_id = metadata.get("channel_id")
+    # Immediate ack with a loading/update to keep Slack happy
+    try:
+        ack(response_action="update", view={
+            "type": "modal",
+            "callback_id": "dealer_edit_modal",
+            "title": {"type": "plain_text", "text": "Edit Dealer"},
+            "submit": {"type": "plain_text", "text": "Save"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": "Fetching dealer details..."}}
+            ]
+        })
+    except Exception:
+        # If ack/update fails, still continue to attempt fetching and notify via DM
+        logger.exception("Initial ack/update failed for dealer_edit_select")
 
-    ack(response_action="update", view={
-        "type": "modal",
-        "callback_id": "dealer_edit_modal",
-        "title": {"type": "plain_text", "text": "Edit Dealer"},
-        "submit": {"type": "plain_text", "text": "Save"},
-        "close": {"type": "plain_text", "text": "Cancel"},
-        "private_metadata": json.dumps({"channel_id": channel_id, "dealer_id": dealer_id}),
-        "blocks": [
-            {
-                "type": "input",
-                "block_id": "name_block",
-                "label": {"type": "plain_text", "text": "Dealer Name"},
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "name_input",
-                    "initial_value": dealer["name"]
+    # Now fetch dealer details and replace the view with the populated form
+    try:
+        dealer = get_dealer_by_id(dealer_id)
+        if not dealer:
+            user_id = body["user"]["id"]
+            channel_id = json.loads(body["view"].get("private_metadata", "{}") or "{}").get("channel_id")
+            client.chat_postEphemeral(channel=channel_id or user_id, user=user_id, text="Selected dealer could not be found.")
+            return
+
+        metadata = json.loads(body["view"].get("private_metadata", "{}") or "{}")
+        channel_id = metadata.get("channel_id")
+
+        populated_view = {
+            "type": "modal",
+            "callback_id": "dealer_edit_modal",
+            "title": {"type": "plain_text", "text": "Edit Dealer"},
+            "submit": {"type": "plain_text", "text": "Save"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": json.dumps({"channel_id": channel_id, "dealer_id": dealer_id}),
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "name_block",
+                    "label": {"type": "plain_text", "text": "Dealer Name"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "name_input",
+                        "initial_value": dealer["name"]
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "address_block",
+                    "label": {"type": "plain_text", "text": "Address"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "address_input",
+                        "initial_value": dealer.get("address", "")
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "phone_block",
+                    "label": {"type": "plain_text", "text": "Phone"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "phone_input",
+                        "initial_value": dealer.get("phone", "")
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "notes_block",
+                    "optional": True,
+                    "label": {"type": "plain_text", "text": "Notes"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "notes_input",
+                        "multiline": True,
+                        "initial_value": dealer.get("notes", "")
+                    }
                 }
-            },
-            {
-                "type": "input",
-                "block_id": "address_block",
-                "label": {"type": "plain_text", "text": "Address"},
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "address_input",
-                    "initial_value": dealer["address"]
-                }
-            },
-            {
-                "type": "input",
-                "block_id": "phone_block",
-                "label": {"type": "plain_text", "text": "Phone"},
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "phone_input",
-                    "initial_value": dealer.get("phone", "")
-                }
-            },
-            {
-                "type": "input",
-                "block_id": "notes_block",
-                "optional": True,
-                "label": {"type": "plain_text", "text": "Notes"},
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "notes_input",
-                    "multiline": True,
-                    "initial_value": dealer.get("notes", "")
-                }
-            }
-        ]
-    })
+            ]
+        }
+
+        # Replace the current view with the populated form
+        try:
+            client.views_update(view_id=body["view"]["id"], view=populated_view)
+        except Exception:
+            # If views_update fails, fall back to opening a new modal via views_open
+            logger.exception("views_update failed; trying views_open fallback")
+            client.views_open(trigger_id=body["trigger_id"], view=populated_view)
+    except Exception:
+        logger.exception("Error while fetching dealer details for modal")
 
 
 @slack_app.view("dealer_edit_modal")
