@@ -47,6 +47,26 @@ else:
     logger.info("Slack integration disabled - set SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET")
 # ORS_API_KEY is optional now because we use approximate-only mode locally
 
+ALLOWED_CHANNELS = ["C0B6J59PPN1"]  # your channel ID
+
+@app.route("/slack/commands", methods=["POST"])
+def slack_commands():
+    if not verify_slack_request(request):
+        return "", 403
+
+    channel_id = request.form.get("channel_id")
+
+    if channel_id not in ALLOWED_CHANNELS:
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": "🚫 This command can only be used in #dealer-finder."
+        })
+
+    # ✅ proceed normally
+    trigger_id = request.form.get("trigger_id")
+    open_modal(trigger_id, channel_id)
+    return "", 200
+
 # --- Flask setup ---
 app = Flask(__name__)
 CORS(app)
@@ -503,15 +523,14 @@ def open_modal(ack, body, client, logger):
     ack()
     logger.info("Slash command received")
 
-
     client.views_open(
-        trigger_id=trigger_id,
+        trigger_id=body["trigger_id"],
         view={
             "type": "modal",
-            "callback_id": "add_dealer_modal",
+            "callback_id": "dealer_form",
             "title": {"type": "plain_text", "text": "Add Dealer"},
-            "submit": {"type": "plain_text", "text": "Save"},
-            "private_metadata": channel_id,
+            "submit": {"type": "plain_text", "text": "Submit"},
+            "close": {"type": "plain_text", "text": "Cancel"},
             "blocks": [
                 {
                     "type": "input",
@@ -520,15 +539,6 @@ def open_modal(ack, body, client, logger):
                     "element": {
                         "type": "plain_text_input",
                         "action_id": "name_input"
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "phone_block",
-                    "label": {"type": "plain_text", "text": "Phone"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "phone_input"
                     }
                 },
                 {
@@ -542,7 +552,17 @@ def open_modal(ack, body, client, logger):
                 },
                 {
                     "type": "input",
+                    "block_id": "phone_block",
+                    "label": {"type": "plain_text", "text": "Phone"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "phone_input"
+                    }
+                },
+                {
+                    "type": "input",
                     "block_id": "latitude_block",
+                    "optional": True,
                     "label": {"type": "plain_text", "text": "Latitude"},
                     "element": {
                         "type": "plain_text_input",
@@ -552,7 +572,7 @@ def open_modal(ack, body, client, logger):
                 {
                     "type": "input",
                     "block_id": "longitude_block",
-
+                    "optional": True,
                     "label": {"type": "plain_text", "text": "Longitude"},
                     "element": {
                         "type": "plain_text_input",
@@ -569,11 +589,12 @@ def open_modal(ack, body, client, logger):
                         "action_id": "notes_input",
                         "multiline": True
                     }
+
+                    
                 }
             ]
         }
     )
-
 
 
 
