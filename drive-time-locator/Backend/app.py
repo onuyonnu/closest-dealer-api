@@ -503,14 +503,15 @@ def open_modal(ack, body, client, logger):
     ack()
     logger.info("Slash command received")
 
+
     client.views_open(
-        trigger_id=body["trigger_id"],
+        trigger_id=trigger_id,
         view={
             "type": "modal",
-            "callback_id": "dealer_form",
+            "callback_id": "add_dealer_modal",
             "title": {"type": "plain_text", "text": "Add Dealer"},
-            "submit": {"type": "plain_text", "text": "Submit"},
-            "close": {"type": "plain_text", "text": "Cancel"},
+            "submit": {"type": "plain_text", "text": "Save"},
+            "private_metadata": channel_id,
             "blocks": [
                 {
                     "type": "input",
@@ -519,6 +520,15 @@ def open_modal(ack, body, client, logger):
                     "element": {
                         "type": "plain_text_input",
                         "action_id": "name_input"
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "phone_block",
+                    "label": {"type": "plain_text", "text": "Phone"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "phone_input"
                     }
                 },
                 {
@@ -532,16 +542,38 @@ def open_modal(ack, body, client, logger):
                 },
                 {
                     "type": "input",
-                    "block_id": "phone_block",
-                    "label": {"type": "plain_text", "text": "Phone"},
+                    "block_id": "latitude_block",
+                    "label": {"type": "plain_text", "text": "Latitude"},
                     "element": {
                         "type": "plain_text_input",
-                        "action_id": "phone_input"
+                        "action_id": "latitude_input"
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "longitude_block",
+
+                    "label": {"type": "plain_text", "text": "Longitude"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "longitude_input"
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "notes_block",
+                    "optional": True,
+                    "label": {"type": "plain_text", "text": "Notes"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "notes_input",
+                        "multiline": True
                     }
                 }
             ]
         }
     )
+
 
 
 
