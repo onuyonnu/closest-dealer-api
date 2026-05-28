@@ -180,19 +180,20 @@ def verify_slack_request(req):
     return signature_verifier.is_valid_request(body, req.headers)
 
 
-def save_dealer_to_db(name, phone, address, latitude, longitude, notes):
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is not configured")
-    try:
-        with get_db_connection() as conn:
-            conn.execute(
-                "INSERT INTO dealers (name, phone, address, latitude, longitude, notes) VALUES (%s, %s, %s, %s, %s, %s)",
-                (name, phone, address, latitude, longitude, notes),
-            )
-        logger.info(f"Saved dealer '{name}' to database")
-    except Exception as e:
-        logger.error(f"Failed to save dealer to database: {e}")
-        raise
+
+def save_dealer_to_db(name, phone, address, lat, lon, notes):
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO dealers (name, phone, address, latitude, longitude, notes)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (name, phone, address, lat, lon, notes))
+
+    conn.commit()  # 🔥 REQUIRED
+    cur.close()
+    conn.close()
+
 
 
 def safe_geocode(query, retries=3, delay=1.0):
@@ -564,7 +565,6 @@ def open_modal(ack, body, client, logger):
                 {
                     "type": "input",
                     "block_id": "latitude_block",
-                    "optional": True,
                     "label": {"type": "plain_text", "text": "Latitude"},
                     "element": {
                         "type": "plain_text_input",
@@ -574,7 +574,6 @@ def open_modal(ack, body, client, logger):
                 {
                     "type": "input",
                     "block_id": "longitude_block",
-                    "optional": True,
                     "label": {"type": "plain_text", "text": "Longitude"},
                     "element": {
                         "type": "plain_text_input",
