@@ -497,105 +497,54 @@ def find_closest():
 
 
 @app.route("/slack/commands", methods=["POST"])
-def slack_commands():
-    # Slack requires a 200 response within 3 seconds, so return immediately
-    try:
-        if not verify_slack_request(request):
-            logger.warning("Slack request verification failed")
-            return "", 200
 
-        command = request.form.get("command")
-        trigger_id = request.form.get("trigger_id")
-        channel_id = request.form.get("channel_id")
+@slack_app.command("/add_dealer")
+def open_modal(ack, body, client, logger):
+    ack()
+    logger.info("Slash command received")
 
-        logger.info(f"Slack command received: {command}")
-
-        if command != "/add_dealer":
-            logger.warning(f"Unsupported Slack command: {command}")
-            return "", 200
-        
-        if not slack_client:
-            logger.error("Slack bot client is not configured")
-            return "", 200
-
-        if not trigger_id:
-            logger.error("No trigger_id in Slack request")
-            return "", 200
-
-        view = {
+    client.views_open(
+        trigger_id=body["trigger_id"],
+        view={
             "type": "modal",
-            "callback_id": "add_dealer_modal",
+            "callback_id": "dealer_form",
             "title": {"type": "plain_text", "text": "Add Dealer"},
-            "submit": {"type": "plain_text", "text": "Save"},
+            "submit": {"type": "plain_text", "text": "Submit"},
             "close": {"type": "plain_text", "text": "Cancel"},
-            "private_metadata": channel_id or "",
             "blocks": [
                 {
                     "type": "input",
                     "block_id": "name_block",
+                    "label": {"type": "plain_text", "text": "Dealer Name"},
                     "element": {
                         "type": "plain_text_input",
                         "action_id": "name_input"
-                    },
-                    "label": {"type": "plain_text", "text": "Dealer name"}
-                },
-                {
-                    "type": "input",
-                    "block_id": "phone_block",
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "phone_input"
-                    },
-                    "label": {"type": "plain_text", "text": "Phone"},
-                    "optional": True
+                    }
                 },
                 {
                     "type": "input",
                     "block_id": "address_block",
+                    "label": {"type": "plain_text", "text": "Address"},
                     "element": {
                         "type": "plain_text_input",
                         "action_id": "address_input"
-                    },
-                    "label": {"type": "plain_text", "text": "Address"}
+                    }
                 },
                 {
                     "type": "input",
-                    "block_id": "latitude_block",
+                    "block_id": "phone_block",
+                    "label": {"type": "plain_text", "text": "Phone"},
                     "element": {
                         "type": "plain_text_input",
-                        "action_id": "latitude_input"
-                    },
-                    "label": {"type": "plain_text", "text": "Latitude"}
-                },
-                {
-                    "type": "input",
-                    "block_id": "longitude_block",
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "longitude_input"
-                    },
-                    "label": {"type": "plain_text", "text": "Longitude"}
-                },
-                {
-                    "type": "input",
-                    "block_id": "notes_block",
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "notes_input",
-                        "multiline": True
-                    },
-                    "label": {"type": "plain_text", "text": "Notes"},
-                    "optional": True
+                        "action_id": "phone_input"
+                    }
                 }
             ]
         }
+    )
 
-        slack_client.views_open(trigger_id=trigger_id, view=view)
-        logger.info("Slack modal opened successfully")
-    except Exception as e:
-        logger.error(f"Error in slack_commands: {e}", exc_info=True)
-    
-    return "", 200
+
+
 
 @app.route("/slack/events", methods=["POST"])
 def slack_events():
@@ -608,49 +557,66 @@ def slack_interactions():
         return jsonify({"error": "invalid request"}), 403
 
     payload = json.loads(request.form.get("payload", "{}"))
+
     if payload.get("type") == "view_submission" and payload.get("view", {}).get("callback_id") == "add_dealer_modal":
         values = payload["view"]["state"]["values"]
-        name = values["name_block"]["name_input"]["value"].strip()
-        phone = values["phone_block"]["phone_input"]["value"].strip()
-        address = values["address_block"]["address_input"]["value"].strip()
-        latitude = values["latitude_block"]["latitude_input"]["value"].strip()
-        longitude = values["longitude_block"]["longitude_input"]["value"].strip()
-        notes = values["notes_block"]["notes_input"]["value"].strip()
+
+        name = (values["name_block"]["name_input"].get("value") or "").strip()
+        phone = (values["phone_block"]["phone_input"].get("value") or "").strip()
+        address = (values["address_block"]["address_input"].get("value") or "").strip()
+        latitude = (values["latitude_block"]["latitude_input"].get("value") or "").strip()
+        longitude = (values["longitude_block"]["longitude_input"].get("value") or "").strip()
+        notes = (values["notes_block"]["notes_input"].get("value") or "").strip()
 
         errors = {}
-        try:
-            latitude_value = float(latitude)
-        except Exception:
-            errors["latitude_block"] = "Latitude must be a valid number."
-        try:
-            longitude_value = float(longitude)
-        except Exception:
-            errors["longitude_block"] = "Longitude must be a valid number."
+
         if not name:
             errors["name_block"] = "Dealer name is required."
         if not address:
             errors["address_block"] = "Address is required."
+
+        latitude_value = None
+        longitude_value = None
+
+        if latitude:
+            try:
+                latitude_value = float(latitude)
+            except ValueError:
+                errors["latitude_block"] = "Latitude must be a valid number."
+
+        if longitude:
+            try:
+                longitude_value = float(longitude)
+            except ValueError:
+                errors["longitude_block"] = "Longitude must be a valid number."
 
         if errors:
             return jsonify({"response_action": "errors", "errors": errors})
 
         try:
             save_dealer_to_db(name, phone, address, latitude_value, longitude_value, notes)
+
             channel_id = payload["view"].get("private_metadata")
             user_id = payload["user"]["id"]
+
             if slack_client and channel_id:
                 slack_client.chat_postEphemeral(
                     channel=channel_id,
                     user=user_id,
                     text=f"Dealer *{name}* has been saved successfully."
                 )
+
         except Exception as e:
             logger.error(f"Error saving dealer from Slack modal: {e}")
-            return jsonify({"response_action": "errors", "errors": {"name_block": "Unable to save dealer. Please try again."}})
+            return jsonify({
+                "response_action": "errors",
+                "errors": {"name_block": "Unable to save dealer. Please try again."}
+            })
 
         return jsonify({"response_action": "clear"})
 
     return "", 200
+
 
 
 @app.route("/autocomplete", methods=["GET"])
