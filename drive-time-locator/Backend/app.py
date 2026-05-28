@@ -273,10 +273,13 @@ def get_dealer_by_id(dealer_id):
     return result.to_dict("records")[0]
 
 
-def update_dealer(dealer_id, name, phone, address, notes=""):
-    location = safe_geocode(address)
-    if not location:
-        raise RuntimeError("Unable to geocode address. Please try again.")
+def update_dealer(dealer_id, name, phone, address, notes="", latitude=None, longitude=None):
+    if latitude is None or longitude is None:
+        location = safe_geocode(address)
+        if not location:
+            raise RuntimeError("Unable to geocode address. Please try again.")
+        latitude, longitude = location["lat"], location["lon"]
+
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -288,7 +291,7 @@ def update_dealer(dealer_id, name, phone, address, notes=""):
                     longitude = %s,
                     notes = %s
                 WHERE ctid::text = %s
-            """, (name, phone, address, location["lat"], location["lon"], notes, dealer_id))
+            """, (name, phone, address, latitude, longitude, notes, dealer_id))
     refresh_dealer_data()
     logger.info(f"Updated dealer '{name}' ({dealer_id}) in database")
 
@@ -861,7 +864,22 @@ def handle_dealer_edit_submission(ack, body, client, logger):
         return
 
     try:
-        update_dealer(dealer_id, name, phone, address, notes=notes)
+        existing_dealer = get_dealer_by_id(dealer_id)
+        if not existing_dealer:
+            ack(response_action="errors", errors={"dealer_select_block": "Dealer not found."})
+            return
+
+        if existing_dealer.get("address", "").strip() != address.strip():
+            location = safe_geocode(address)
+            if not location:
+                ack(response_action="errors", errors={"address_block": "Unable to geocode the new address. Please verify it."})
+                return
+            latitude, longitude = location["lat"], location["lon"]
+        else:
+            latitude = existing_dealer.get("latitude")
+            longitude = existing_dealer.get("longitude")
+
+        update_dealer(dealer_id, name, phone, address, notes=notes, latitude=latitude, longitude=longitude)
         user_id = body["user"]["id"]
         public_text = (
             f":pencil2: Dealer *{name}* updated by <@{user_id}>.\n"
