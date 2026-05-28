@@ -181,14 +181,87 @@ def verify_slack_request(req):
 
 
 
-def save_dealer_to_db(name, phone, address, lat, lon, notes):
+def save_dealer_to_db(name, phone, address, notes="", latitude=None, longitude=None):
+    if latitude is None or longitude is None:
+        location = safe_geocode(address)
+        if not location:
+            raise RuntimeError("Unable to geocode address. Please try again.")
+        latitude, longitude = location["lat"], location["lon"]
+
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO dealers (name, phone, address, latitude, longitude, notes)
                 VALUES (%s, %s, %s, %s, %s, %s)
-            """, (name, phone, address, lat, lon, notes))
+            """, (name, phone, address, latitude, longitude, notes))
+
+    refresh_dealer_data()
     logger.info(f"Saved dealer '{name}' to database")
+
+
+def refresh_dealer_data():
+    global df
+    df = load_dealer_data()
+    logger.info("Dealer data refreshed from database")
+
+
+def get_all_dealers(limit=100):
+    if not DATABASE_URL:
+        return []
+    query = """
+        SELECT ctid::text AS dealer_id,
+               name,
+               phone,
+               address,
+               latitude,
+               longitude,
+               notes
+        FROM dealers
+        ORDER BY name
+        LIMIT %s
+    """
+    return pd.read_sql_query(query, get_db_connection(), params=(limit,)).to_dict("records")
+
+
+def get_dealer_by_id(dealer_id):
+    if not DATABASE_URL:
+        return None
+    query = """
+        SELECT ctid::text AS dealer_id,
+               name,
+               phone,
+               address,
+               latitude,
+               longitude,
+               notes
+        FROM dealers
+        WHERE ctid::text = %s
+        LIMIT 1
+    """
+    result = pd.read_sql_query(query, get_db_connection(), params=(dealer_id,))
+    if result.empty:
+        return None
+    return result.to_dict("records")[0]
+
+
+def update_dealer(dealer_id, name, phone, address, notes=""):
+    location = safe_geocode(address)
+    if not location:
+        raise RuntimeError("Unable to geocode address. Please try again.")
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE dealers
+                SET name = %s,
+                    phone = %s,
+                    address = %s,
+                    latitude = %s,
+                    longitude = %s,
+                    notes = %s
+                WHERE ctid::text = %s
+            """, (name, phone, address, location["lat"], location["lon"], notes, dealer_id))
+    refresh_dealer_data()
+    logger.info(f"Updated dealer '{name}' ({dealer_id}) in database")
 
 
 
@@ -498,29 +571,21 @@ def find_closest():
 
 
 @app.route("/slack/commands", methods=["POST"])
-def slack_commands():
-    if not verify_slack_request(request):
-        return "", 403
+@app.route("/slack/events", methods=["POST"])
+@app.route("/slack/interactions", methods=["POST"])
+def slack_events():
+    return handler.handle(request)
 
-    channel_id = request.form.get("channel_id")
-
-    if channel_id not in ALLOWED_CHANNELS:
-        return jsonify({
-            "response_type": "ephemeral",
-            "text": "🚫 This command can only be used in #dealer-finder."
-        })
-
-    # ✅ proceed normally
-    trigger_id = request.form.get("trigger_id")
-    open_modal(trigger_id, channel_id)
-    return "", 200
-
-@app.route("/slack/commands", methods=["POST"])
 
 @slack_app.command("/add_dealer")
-def open_modal(ack, body, client, logger):
+def open_add_modal(ack, body, client, logger):
+    channel_id = body.get("channel_id")
+    if channel_id not in ALLOWED_CHANNELS:
+        ack("🚫 This command can only be used in #dealer-finder.")
+        return
+
     ack()
-    logger.info("Slash command received")
+    logger.info("Slash command /add_dealer received")
 
     client.views_open(
         trigger_id=body["trigger_id"],
@@ -530,6 +595,7 @@ def open_modal(ack, body, client, logger):
             "title": {"type": "plain_text", "text": "Add Dealer"},
             "submit": {"type": "plain_text", "text": "Submit"},
             "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": json.dumps({"channel_id": body.get("channel_id")}),
             "blocks": [
                 {
                     "type": "input",
@@ -560,24 +626,6 @@ def open_modal(ack, body, client, logger):
                 },
                 {
                     "type": "input",
-                    "block_id": "latitude_block",
-                    "label": {"type": "plain_text", "text": "Latitude"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "latitude_input"
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "longitude_block",
-                    "label": {"type": "plain_text", "text": "Longitude"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "longitude_input"
-                    }
-                },
-                {
-                    "type": "input",
                     "block_id": "notes_block",
                     "optional": True,
                     "label": {"type": "plain_text", "text": "Notes"},
@@ -586,8 +634,6 @@ def open_modal(ack, body, client, logger):
                         "action_id": "notes_input",
                         "multiline": True
                     }
-
-                    
                 }
             ]
         }
@@ -596,77 +642,201 @@ def open_modal(ack, body, client, logger):
 
 
 
-@app.route("/slack/events", methods=["POST"])
-def slack_events():
-    return handler.handle(request)
+@slack_app.command("/dealer_edit")
+def open_dealer_edit_modal(ack, body, client, logger):
+    channel_id = body.get("channel_id")
+    if channel_id not in ALLOWED_CHANNELS:
+        ack("🚫 This command can only be used in #dealer-finder.")
+        return
+
+    ack()
+    logger.info("Slash command /dealer_edit received")
+
+    dealers = get_all_dealers(limit=100)
+    if not dealers:
+        client.chat_postEphemeral(
+            channel=channel_id,
+            user=body.get("user_id"),
+            text="No dealers were found to edit."
+        )
+        return
+
+    options = []
+    for dealer in dealers:
+        text = dealer["name"]
+        if dealer.get("address"):
+            text = f"{text} — {dealer['address']}"
+        options.append({
+            "text": {"type": "plain_text", "text": text[:75]},
+            "value": dealer["dealer_id"]
+        })
+
+    client.views_open(
+        trigger_id=body["trigger_id"],
+        view={
+            "type": "modal",
+            "callback_id": "dealer_edit_select",
+            "title": {"type": "plain_text", "text": "Edit Dealer"},
+            "submit": {"type": "plain_text", "text": "Continue"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": json.dumps({"channel_id": channel_id}),
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "dealer_select_block",
+                    "label": {"type": "plain_text", "text": "Select a dealer"},
+                    "element": {
+                        "type": "static_select",
+                        "action_id": "dealer_select",
+                        "options": options
+                    }
+                }
+            ]
+        }
+    )
 
 
-@app.route("/slack/interactions", methods=["POST"])
-def slack_interactions():
-    if not verify_slack_request(request):
-        return jsonify({"error": "invalid request"}), 403
+@slack_app.view("add_dealer_modal")
+def handle_add_dealer_modal_submission(ack, body, client, logger):
+    values = body["view"]["state"]["values"]
+    name = values["name_block"]["name_input"]["value"].strip()
+    phone = values["phone_block"]["phone_input"]["value"].strip()
+    address = values["address_block"]["address_input"]["value"].strip()
+    notes = values["notes_block"]["notes_input"]["value"].strip()
 
-    payload = json.loads(request.form.get("payload", "{}"))
+    errors = {}
+    if not name:
+        errors["name_block"] = "Dealer name is required."
+    if not address:
+        errors["address_block"] = "Address is required."
 
-    if payload.get("type") == "view_submission" and payload.get("view", {}).get("callback_id") == "add_dealer_modal":
-        values = payload["view"]["state"]["values"]
+    if errors:
+        ack(response_action="errors", errors=errors)
+        return
 
-        name = (values["name_block"]["name_input"].get("value") or "").strip()
-        phone = (values["phone_block"]["phone_input"].get("value") or "").strip()
-        address = (values["address_block"]["address_input"].get("value") or "").strip()
-        latitude = (values["latitude_block"]["latitude_input"].get("value") or "").strip()
-        longitude = (values["longitude_block"]["longitude_input"].get("value") or "").strip()
-        notes = (values["notes_block"]["notes_input"].get("value") or "").strip()
+    try:
+        save_dealer_to_db(name, phone, address, notes=notes)
+        metadata = json.loads(body["view"].get("private_metadata", "{}"))
+        channel_id = metadata.get("channel_id")
+        user_id = body["user"]["id"]
+        if channel_id:
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text=f"Dealer *{name}* has been added successfully."
+            )
+        ack(response_action="clear")
+    except Exception as e:
+        logger.error(f"Error saving dealer from Slack modal: {e}")
+        ack(response_action="errors", errors={"name_block": "Unable to save dealer. Please try again."})
 
-        errors = {}
 
-        if not name:
-            errors["name_block"] = "Dealer name is required."
-        if not address:
-            errors["address_block"] = "Address is required."
+@slack_app.view("dealer_edit_select")
+def handle_dealer_select(ack, body, client, logger):
+    values = body["view"]["state"]["values"]
+    selected = values["dealer_select_block"]["dealer_select"].get("selected_option")
+    if not selected:
+        ack(response_action="errors", errors={"dealer_select_block": "Please choose a dealer to edit."})
+        return
 
-        latitude_value = None
-        longitude_value = None
+    dealer_id = selected["value"]
+    dealer = get_dealer_by_id(dealer_id)
+    if not dealer:
+        ack(response_action="errors", errors={"dealer_select_block": "Selected dealer could not be found."})
+        return
 
-        if latitude:
-            try:
-                latitude_value = float(latitude)
-            except ValueError:
-                errors["latitude_block"] = "Latitude must be a valid number."
+    metadata = json.loads(body["view"].get("private_metadata", "{}"))
+    channel_id = metadata.get("channel_id")
 
-        if longitude:
-            try:
-                longitude_value = float(longitude)
-            except ValueError:
-                errors["longitude_block"] = "Longitude must be a valid number."
+    ack(response_action="update", view={
+        "type": "modal",
+        "callback_id": "dealer_edit_modal",
+        "title": {"type": "plain_text", "text": "Edit Dealer"},
+        "submit": {"type": "plain_text", "text": "Save"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "private_metadata": json.dumps({"channel_id": channel_id, "dealer_id": dealer_id}),
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "name_block",
+                "label": {"type": "plain_text", "text": "Dealer Name"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "name_input",
+                    "initial_value": dealer["name"]
+                }
+            },
+            {
+                "type": "input",
+                "block_id": "address_block",
+                "label": {"type": "plain_text", "text": "Address"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "address_input",
+                    "initial_value": dealer["address"]
+                }
+            },
+            {
+                "type": "input",
+                "block_id": "phone_block",
+                "label": {"type": "plain_text", "text": "Phone"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "phone_input",
+                    "initial_value": dealer.get("phone", "")
+                }
+            },
+            {
+                "type": "input",
+                "block_id": "notes_block",
+                "optional": True,
+                "label": {"type": "plain_text", "text": "Notes"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "notes_input",
+                    "multiline": True,
+                    "initial_value": dealer.get("notes", "")
+                }
+            }
+        ]
+    })
 
-        if errors:
-            return jsonify({"response_action": "errors", "errors": errors})
 
-        try:
-            save_dealer_to_db(name, phone, address, latitude_value, longitude_value, notes)
+@slack_app.view("dealer_edit_modal")
+def handle_dealer_edit_submission(ack, body, client, logger):
+    values = body["view"]["state"]["values"]
+    name = values["name_block"]["name_input"]["value"].strip()
+    address = values["address_block"]["address_input"]["value"].strip()
+    phone = values["phone_block"]["phone_input"]["value"].strip()
+    notes = values["notes_block"]["notes_input"]["value"].strip()
 
-            channel_id = payload["view"].get("private_metadata")
-            user_id = payload["user"]["id"]
+    metadata = json.loads(body["view"].get("private_metadata", "{}"))
+    dealer_id = metadata.get("dealer_id")
+    channel_id = metadata.get("channel_id")
 
-            if slack_client and channel_id:
-                slack_client.chat_postEphemeral(
-                    channel=channel_id,
-                    user=user_id,
-                    text=f"Dealer *{name}* has been saved successfully."
-                )
+    errors = {}
+    if not name:
+        errors["name_block"] = "Dealer name is required."
+    if not address:
+        errors["address_block"] = "Address is required."
 
-        except Exception as e:
-            logger.error(f"Error saving dealer from Slack modal: {e}")
-            return jsonify({
-                "response_action": "errors",
-                "errors": {"name_block": "Unable to save dealer. Please try again."}
-            })
+    if errors:
+        ack(response_action="errors", errors=errors)
+        return
 
-        return jsonify({"response_action": "clear"})
-
-    return "", 200
-
+    try:
+        update_dealer(dealer_id, name, phone, address, notes=notes)
+        user_id = body["user"]["id"]
+        if channel_id:
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text=f"Dealer *{name}* has been updated successfully."
+            )
+        ack(response_action="clear")
+    except Exception as e:
+        logger.error(f"Error updating dealer from Slack modal: {e}")
+        ack(response_action="errors", errors={"name_block": "Unable to update dealer. Please try again."})
 
 
 @app.route("/autocomplete", methods=["GET"])
