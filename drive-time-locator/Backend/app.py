@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+import json
 import pandas as pd
 import psycopg
 import requests
@@ -6,11 +7,14 @@ from openrouteservice import Client
 from geopy.geocoders import Nominatim
 from flask_cors import CORS
 from dotenv import load_dotenv
+from slack_sdk.web import WebClient
+from slack_sdk.signature import SignatureVerifier
 import os
 import math
 import time
 import threading
 import logging
+
 
 # --- Logging setup ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -20,6 +24,17 @@ logger = logging.getLogger("closest-dealer-api")
 load_dotenv()
 ORS_API_KEY = os.getenv("ORS_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
+
+slack_client = None
+signature_verifier = None
+if SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET:
+    slack_client = WebClient(token=SLACK_BOT_TOKEN)
+    signature_verifier = SignatureVerifier(SLACK_SIGNING_SECRET)
+    logger.info("Slack integration enabled")
+else:
+    logger.info("Slack integration disabled - set SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET")
 # ORS_API_KEY is optional now because we use approximate-only mode locally
 
 # --- Flask setup ---
@@ -142,6 +157,28 @@ def save_geocode_to_db(address, latitude, longitude):
         logger.info(f"Cached geocode for '{address}' in database")
     except Exception as e:
         logger.warning(f"Failed to save geocode to database: {e}")
+
+
+def verify_slack_request(req):
+    if not signature_verifier:
+        return False
+    body = req.get_data()
+    return signature_verifier.is_valid_request(body, req.headers)
+
+
+def save_dealer_to_db(name, phone, address, latitude, longitude, notes):
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not configured")
+    try:
+        with get_db_connection() as conn:
+            conn.execute(
+                "INSERT INTO dealers (name, phone, address, latitude, longitude, notes) VALUES (%s, %s, %s, %s, %s, %s)",
+                (name, phone, address, latitude, longitude, notes),
+            )
+        logger.info(f"Saved dealer '{name}' to database")
+    except Exception as e:
+        logger.error(f"Failed to save dealer to database: {e}")
+        raise
 
 
 def safe_geocode(query, retries=3, delay=1.0):
@@ -447,6 +484,148 @@ def find_closest():
 
     logger.info(f"Returning top {len(final_results)} results (approximate only)")
     return jsonify(final_results)
+
+
+@app.route("/slack/commands", methods=["POST"])
+def slack_commands():
+    if not verify_slack_request(request):
+        return jsonify({"error": "invalid request"}), 403
+
+    command = request.form.get("command")
+    trigger_id = request.form.get("trigger_id")
+    channel_id = request.form.get("channel_id")
+
+    if command != "/add dealer":
+        return jsonify({"text": "Unsupported command"}), 400
+    if not slack_client:
+        return jsonify({"text": "Slack bot is not configured."}), 500
+
+    view = {
+        "type": "modal",
+        "callback_id": "add_dealer_modal",
+        "title": {"type": "plain_text", "text": "Add Dealer"},
+        "submit": {"type": "plain_text", "text": "Save"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "private_metadata": channel_id,
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "name_block",
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "name_input"
+                },
+                "label": {"type": "plain_text", "text": "Dealer name"}
+            },
+            {
+                "type": "input",
+                "block_id": "phone_block",
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "phone_input"
+                },
+                "label": {"type": "plain_text", "text": "Phone"},
+                "optional": true
+            },
+            {
+                "type": "input",
+                "block_id": "address_block",
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "address_input"
+                },
+                "label": {"type": "plain_text", "text": "Address"}
+            },
+            {
+                "type": "input",
+                "block_id": "latitude_block",
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "latitude_input"
+                },
+                "label": {"type": "plain_text", "text": "Latitude"}
+            },
+            {
+                "type": "input",
+                "block_id": "longitude_block",
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "longitude_input"
+                },
+                "label": {"type": "plain_text", "text": "Longitude"}
+            },
+            {
+                "type": "input",
+                "block_id": "notes_block",
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "notes_input",
+                    "multiline": True
+                },
+                "label": {"type": "plain_text", "text": "Notes"},
+                "optional": true
+            }
+        ]
+    }
+
+    try:
+        slack_client.views_open(trigger_id=trigger_id, view=view)
+    except Exception as e:
+        logger.error(f"Failed to open Slack modal: {e}")
+        return jsonify({"text": "Failed to open form."}), 500
+
+    return "", 200
+
+
+@app.route("/slack/interactions", methods=["POST"])
+def slack_interactions():
+    if not verify_slack_request(request):
+        return jsonify({"error": "invalid request"}), 403
+
+    payload = json.loads(request.form.get("payload", "{}"))
+    if payload.get("type") == "view_submission" and payload.get("view", {}).get("callback_id") == "add_dealer_modal":
+        values = payload["view"]["state"]["values"]
+        name = values["name_block"]["name_input"]["value"].strip()
+        phone = values["phone_block"]["phone_input"]["value"].strip()
+        address = values["address_block"]["address_input"]["value"].strip()
+        latitude = values["latitude_block"]["latitude_input"]["value"].strip()
+        longitude = values["longitude_block"]["longitude_input"]["value"].strip()
+        notes = values["notes_block"]["notes_input"]["value"].strip()
+
+        errors = {}
+        try:
+            latitude_value = float(latitude)
+        except Exception:
+            errors["latitude_block"] = "Latitude must be a valid number."
+        try:
+            longitude_value = float(longitude)
+        except Exception:
+            errors["longitude_block"] = "Longitude must be a valid number."
+        if not name:
+            errors["name_block"] = "Dealer name is required."
+        if not address:
+            errors["address_block"] = "Address is required."
+
+        if errors:
+            return jsonify({"response_action": "errors", "errors": errors})
+
+        try:
+            save_dealer_to_db(name, phone, address, latitude_value, longitude_value, notes)
+            channel_id = payload["view"].get("private_metadata")
+            user_id = payload["user"]["id"]
+            if slack_client and channel_id:
+                slack_client.chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=f"Dealer *{name}* has been saved successfully."
+                )
+        except Exception as e:
+            logger.error(f"Error saving dealer from Slack modal: {e}")
+            return jsonify({"response_action": "errors", "errors": {"name_block": "Unable to save dealer. Please try again."}})
+
+        return jsonify({"response_action": "clear"})
+
+    return "", 200
 
 
 @app.route("/autocomplete", methods=["GET"])
