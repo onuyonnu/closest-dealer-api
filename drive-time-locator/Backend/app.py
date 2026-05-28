@@ -180,6 +180,35 @@ def verify_slack_request(req):
     return signature_verifier.is_valid_request(body, req.headers)
 
 
+def post_slack_channel_message(client, channel_id, text):
+    if not channel_id:
+        return
+    try:
+        client.chat_postMessage(channel=channel_id, text=text)
+    except Exception as e:
+        logger.warning(f"Slack public channel message failed for channel {channel_id}: {e}")
+
+
+def send_slack_feedback(client, channel_id, user_id, public_text, private_text=None):
+    """Post a public channel message and send a private confirmation to the user."""
+    if channel_id:
+        post_slack_channel_message(client, channel_id, public_text)
+
+    if private_text is None:
+        private_text = "Your change was recorded successfully."
+
+    if channel_id:
+        try:
+            client.chat_postEphemeral(channel=channel_id, user=user_id, text=private_text)
+            return
+        except Exception as e:
+            logger.warning(f"Slack ephemeral feedback failed for channel {channel_id}: {e}")
+
+    try:
+        client.chat_postMessage(channel=user_id, text=private_text)
+    except Exception as e:
+        logger.error(f"Slack fallback DM failed for user {user_id}: {e}")
+
 
 def save_dealer_to_db(name, phone, address, notes="", latitude=None, longitude=None):
     if latitude is None or longitude is None:
@@ -719,17 +748,24 @@ def handle_add_dealer_modal_submission(ack, body, client, logger):
         metadata = json.loads(body["view"].get("private_metadata", "{}"))
         channel_id = metadata.get("channel_id")
         user_id = body["user"]["id"]
-        if channel_id:
-            client.chat_postEphemeral(
-                channel=channel_id,
-                user=user_id,
-                text=f"Dealer *{name}* has been added successfully."
-            )
-        ack(response_action="clear")
+        public_text = (
+            f":white_check_mark: Dealer *{name}* added by <@{user_id}>.\n"
+            f"*Address:* {address}\n"
+            f"*Phone:* {phone or 'N/A'}"
+        )
+        if notes:
+            public_text += f"\n*Notes:* {notes}"
+        send_slack_feedback(
+            client,
+            channel_id,
+            user_id,
+            public_text,
+            private_text=f"Dealer *{name}* was added successfully."
+        )
+        ack()
     except Exception as e:
-        logger.error(f"Error saving dealer from Slack modal: {e}")
-        ack(response_action="errors", errors={"name_block": "Unable to save dealer. Please try again."})
-
+        logger.error(f"Failed to save dealer '{name}': {e}")
+        ack(response_action="errors", errors={"name_block": "Unable to add dealer. Please try again."})
 
 @slack_app.view("dealer_edit_select")
 def handle_dealer_select(ack, body, client, logger):
@@ -827,15 +863,23 @@ def handle_dealer_edit_submission(ack, body, client, logger):
     try:
         update_dealer(dealer_id, name, phone, address, notes=notes)
         user_id = body["user"]["id"]
-        if channel_id:
-            client.chat_postEphemeral(
-                channel=channel_id,
-                user=user_id,
-                text=f"Dealer *{name}* has been updated successfully."
-            )
-        ack(response_action="clear")
+        public_text = (
+            f":pencil2: Dealer *{name}* updated by <@{user_id}>.\n"
+            f"*Address:* {address}\n"
+            f"*Phone:* {phone or 'N/A'}"
+        )
+        if notes:
+            public_text += f"\n*Notes:* {notes}"
+        send_slack_feedback(
+            client,
+            channel_id,
+            user_id,
+            public_text,
+            private_text=f"Dealer *{name}* was updated successfully."
+        )
+        ack()
     except Exception as e:
-        logger.error(f"Error updating dealer from Slack modal: {e}")
+        logger.error(f"Failed to update dealer '{name}' ({dealer_id}): {e}")
         ack(response_action="errors", errors={"name_block": "Unable to update dealer. Please try again."})
 
 
