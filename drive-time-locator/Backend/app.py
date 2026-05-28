@@ -29,6 +29,12 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
 
+slack_app = SlackBoltApp(
+    token=os.getenv("SLACK_BOT_TOKEN"),
+    signing_secret=os.getenv("SLACK_SIGNING_SECRET"),
+)
+
+
 
 slack_client = None
 handler = SlackRequestHandler(slack_app)
