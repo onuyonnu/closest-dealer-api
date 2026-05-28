@@ -73,31 +73,32 @@
     <p><b>Created by:</b> Olivier</p>
     <p>This tool helps you find the closest dealer locations by drive time.</p>
     <ul>
-      <li>Sorry for the recent issues should be alot more stable now.</li>      
-      <li>Auto-complete only works for <b>United States addresses</b>.</li>
-      <li>All dealers are now included.</li>
-      <li>All geocoding and routing requests are made through free services — please be patient as responses may take a few seconds.</li>
-      <li>If results don’t appear immediately, try again in a few moments.</li>
-      <li>Issues with Texas Dealer resolved.</li>
+      <li>The backend now runs on Flask + PostgreSQL and supports Slack slash commands for managing dealers.</li>
+      <li>New Slack flows: <code>/add_dealer</code> and <code>/dealer_edit</code> open modals for dealer creation and updates this is available to a specific channel only.</li>
+      <li>Edited dealers refresh coordinates when the address changes, and all changes are saved to the database.</li>
+      <li>Slack now posts public channel updates showing who added or edited a dealer and what changed.</li>
+      <li>Geocoding uses Nominatim first, then OpenRouteService as a fallback, with caching in the database and memory.</li>
+      <li>Auto-complete is still US-only, and drive-time results are approximate.</li>
+      <li>The app is more stable and now centralizes dealer data in the database instead of static Excel only, searches are saved for future use as well.</li>
     </ul>
   </div>
 
   <details>
     <summary>Changelog</summary>
     <ul>
-      <li><b>v1.7.3</b> - Added 3 dealers: Solar Ninja's, I Love My Solar, Virginia Inc. and Intelligent Design Heating & Cooling.</li>
-      <li><b>v1.7.2</b> - Updated Drake's Phone number as well as Added a note that Otovo covers all of Cali now.</li>
-      <li><b>v1.7.1</b> - Added 2 dealers and a number for Otovo added True Solar LLC, TRUE TEXAS SOLAR LLC</li>
-      <li><b>v1.7</b> - Major changes to the back up geocoding functionality. Should be alot more reliable now. Also changed multiple addresses since they were using billing which would have been less accurate.</li>
-      <li><b>v1.7</b> - Added 3 new dealers and fixed some edge cases with geocoding and drive time calculation. As well as a conditional note section.</li>
-      <li><b>v1.6</b> - Fixed  the multiple issues from the previous improvement and added 2 dealers.</li>
-      <li><b>v1.5</b> - Added Back up geocoding functionality.</li>
-      <li><b>v1.4.2</b> - Added dealers: SERVICE SOLAR PROS LLC and 2BL LLC DBA FLOW STATE SOLAR.</li>
-      <li><b>v1.4</b> - Added dealer: KW Energy.</li>
-      <li><b>v1.3</b> - Added dealers: Suntalk CRE, FlatRock. Removed dealers: Huntinparty, Judd Solar.</li>
-      <li><b>v1.2</b> - Issues with Texas Dealer resolved.</li>
-      <li><b>v1.1</b> - All dealers now included. Auto-complete added for US addresses.</li>
-      <li><b>v1.0</b> - Initial release with drive time calculation.</li>
+      <li><b>Latest</b> - Added Slack dealer management support with public channel notifications and private confirmation.</li>
+      <li><b>Latest</b> - Added <code>/dealer_edit</code> flow to select, edit, and update existing dealers.</li>
+      <li><b>Latest</b> - Saved dealer edits now re-geocode updated addresses and store fresh latitude/longitude.</li>
+      <li><b>Latest</b> - Added database-backed dealer storage and refreshed in-memory dealer data after each mutation.</li>
+      <li><b>Latest</b> - Improved geocoding reliability with cached results, Nominatim primary lookup, and ORS fallback.</li>
+      <li><b>v1.7</b> - Major geocoding reliability improvements and address accuracy fixes.</li>
+      <li><b>v1.6</b> - Fixed multiple geocoding edge cases and improved drive-time accuracy.</li>
+      <li><b>v1.5</b> - Added backup geocoding fallback.</li>
+      <li><b>v1.4</b> - Added new dealers and improved dealer notes presentation.</li>
+      <li><b>v1.3</b> - Updated dealer list and removed outdated listings.</li>
+      <li><b>v1.2</b> - Resolved Texas dealer issues.</li>
+      <li><b>v1.1</b> - Added US address autocomplete and full dealer inclusion.</li>
+      <li><b>v1.0</b> - Initial release with drive-time calculation.</li>
     </ul>
   </details>
 
