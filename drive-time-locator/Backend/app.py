@@ -182,17 +182,13 @@ def verify_slack_request(req):
 
 
 def save_dealer_to_db(name, phone, address, lat, lon, notes):
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        INSERT INTO dealers (name, phone, address, latitude, longitude, notes)
-        VALUES (%s, %s, %s, %s, %s, %s)
-    """, (name, phone, address, lat, lon, notes))
-
-    conn.commit()  # 🔥 REQUIRED
-    cur.close()
-    conn.close()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO dealers (name, phone, address, latitude, longitude, notes)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (name, phone, address, lat, lon, notes))
+    logger.info(f"Saved dealer '{name}' to database")
 
 
 
@@ -530,7 +526,7 @@ def open_modal(ack, body, client, logger):
         trigger_id=body["trigger_id"],
         view={
             "type": "modal",
-            "callback_id": "dealer_form",
+            "callback_id": "add_dealer_modal",
             "title": {"type": "plain_text", "text": "Add Dealer"},
             "submit": {"type": "plain_text", "text": "Submit"},
             "close": {"type": "plain_text", "text": "Cancel"},
