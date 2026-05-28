@@ -249,7 +249,12 @@ def get_all_dealers(limit=100):
         ORDER BY name
         LIMIT %s
     """
-    return pd.read_sql_query(query, get_db_connection(), params=(limit,)).to_dict("records")
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, (limit,))
+            cols = [desc[0] for desc in cur.description]
+            rows = cur.fetchall()
+    return [dict(zip(cols, row)) for row in rows]
 
 
 def get_dealer_by_id(dealer_id):
@@ -267,10 +272,14 @@ def get_dealer_by_id(dealer_id):
         WHERE ctid::text = %s
         LIMIT 1
     """
-    result = pd.read_sql_query(query, get_db_connection(), params=(dealer_id,))
-    if result.empty:
-        return None
-    return result.to_dict("records")[0]
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, (dealer_id,))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            cols = [desc[0] for desc in cur.description]
+    return dict(zip(cols, row))
 
 
 def update_dealer(dealer_id, name, phone, address, notes="", latitude=None, longitude=None):
@@ -731,10 +740,15 @@ def open_dealer_edit_modal(ack, body, client, logger):
 @slack_app.view("add_dealer_modal")
 def handle_add_dealer_modal_submission(ack, body, client, logger):
     values = body["view"]["state"]["values"]
-    name = values["name_block"]["name_input"]["value"].strip()
-    phone = values["phone_block"]["phone_input"]["value"].strip()
-    address = values["address_block"]["address_input"]["value"].strip()
-    notes = values["notes_block"]["notes_input"]["value"].strip()
+    name = values["name_block"]["name_input"].get("value", "") or ""
+    phone = values["phone_block"]["phone_input"].get("value", "") or ""
+    address = values["address_block"]["address_input"].get("value", "") or ""
+    notes = values["notes_block"]["notes_input"].get("value", "") or ""
+
+    name = name.strip()
+    phone = phone.strip()
+    address = address.strip()
+    notes = notes.strip()
 
     errors = {}
     if not name:
