@@ -14,7 +14,7 @@ import math
 import time
 import threading
 import logging
-from slack_bolt import App
+from slack_bolt import App as SlackBoltApp
 from slack_bolt.adapter.flask import SlackRequestHandler
 
 
