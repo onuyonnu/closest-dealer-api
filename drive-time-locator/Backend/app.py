@@ -760,6 +760,8 @@ def handle_add_dealer_modal_submission(ack, body, client, logger):
         ack(response_action="errors", errors=errors)
         return
 
+    ack()
+
     try:
         save_dealer_to_db(name, phone, address, notes=notes)
         metadata = json.loads(body["view"].get("private_metadata", "{}"))
@@ -779,10 +781,18 @@ def handle_add_dealer_modal_submission(ack, body, client, logger):
             public_text,
             private_text=f"Dealer *{name}* was added successfully."
         )
-        ack()
     except Exception as e:
         logger.error(f"Failed to save dealer '{name}': {e}")
-        ack(response_action="errors", errors={"name_block": "Unable to add dealer. Please try again."})
+        user_id = body["user"]["id"]
+        channel_id = json.loads(body["view"].get("private_metadata", "{}")).get("channel_id")
+        try:
+            client.chat_postEphemeral(
+                channel=channel_id or user_id,
+                user=user_id,
+                text=f"Unable to add dealer *{name}*. Please try again later."
+            )
+        except Exception as err:
+            logger.error(f"Failed to send failure notification for add dealer: {err}")
 
 @slack_app.view("dealer_edit_select")
 def handle_dealer_select(ack, body, client, logger):
@@ -893,6 +903,7 @@ def handle_dealer_edit_submission(ack, body, client, logger):
             latitude = existing_dealer.get("latitude")
             longitude = existing_dealer.get("longitude")
 
+        ack()
         update_dealer(dealer_id, name, phone, address, notes=notes, latitude=latitude, longitude=longitude)
         user_id = body["user"]["id"]
         public_text = (
@@ -909,10 +920,17 @@ def handle_dealer_edit_submission(ack, body, client, logger):
             public_text,
             private_text=f"Dealer *{name}* was updated successfully."
         )
-        ack()
     except Exception as e:
         logger.error(f"Failed to update dealer '{name}' ({dealer_id}): {e}")
-        ack(response_action="errors", errors={"name_block": "Unable to update dealer. Please try again."})
+        user_id = body["user"]["id"]
+        try:
+            client.chat_postEphemeral(
+                channel=channel_id or user_id,
+                user=user_id,
+                text=f"Unable to update dealer *{name}*. Please try again later."
+            )
+        except Exception as err:
+            logger.error(f"Failed to send failure notification for edit dealer: {err}")
 
 
 @app.route("/autocomplete", methods=["GET"])
