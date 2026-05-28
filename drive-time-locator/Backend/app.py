@@ -14,6 +14,8 @@ import math
 import time
 import threading
 import logging
+from slack_bolt import App
+from slack_bolt.adapter.flask import SlackRequestHandler
 
 
 # --- Logging setup ---
@@ -27,7 +29,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
 
+
 slack_client = None
+handler = SlackRequestHandler(slack_app)
 signature_verifier = None
 if SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET:
     slack_client = WebClient(token=SLACK_BOT_TOKEN)
