@@ -49,23 +49,7 @@ else:
 
 ALLOWED_CHANNELS = ["C0B6J59PPN1"]  # your channel ID
 
-@app.route("/slack/commands", methods=["POST"])
-def slack_commands():
-    if not verify_slack_request(request):
-        return "", 403
 
-    channel_id = request.form.get("channel_id")
-
-    if channel_id not in ALLOWED_CHANNELS:
-        return jsonify({
-            "response_type": "ephemeral",
-            "text": "🚫 This command can only be used in #dealer-finder."
-        })
-
-    # ✅ proceed normally
-    trigger_id = request.form.get("trigger_id")
-    open_modal(trigger_id, channel_id)
-    return "", 200
 
 # --- Flask setup ---
 app = Flask(__name__)
@@ -515,6 +499,24 @@ def find_closest():
     logger.info(f"Returning top {len(final_results)} results (approximate only)")
     return jsonify(final_results)
 
+
+@app.route("/slack/commands", methods=["POST"])
+def slack_commands():
+    if not verify_slack_request(request):
+        return "", 403
+
+    channel_id = request.form.get("channel_id")
+
+    if channel_id not in ALLOWED_CHANNELS:
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": "🚫 This command can only be used in #dealer-finder."
+        })
+
+    # ✅ proceed normally
+    trigger_id = request.form.get("trigger_id")
+    open_modal(trigger_id, channel_id)
+    return "", 200
 
 @app.route("/slack/commands", methods=["POST"])
 
