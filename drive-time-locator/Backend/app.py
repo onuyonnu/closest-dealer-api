@@ -587,6 +587,10 @@ def slack_commands():
     
     return "", 200
 
+@app.route("/slack/events", methods=["POST"])
+def slack_events():
+    return handler.handle(request)
+
 
 @app.route("/slack/interactions", methods=["POST"])
 def slack_interactions():
