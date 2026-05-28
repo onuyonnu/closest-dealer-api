@@ -161,18 +161,9 @@ def save_geocode_to_db(address, latitude, longitude):
 
 def verify_slack_request(req):
     if not signature_verifier:
-        logger.warning("Slack signature verifier not configured")
         return False
-    try:
-        body = req.get_data()
-        is_valid = signature_verifier.is_valid_request(body, req.headers)
-        if not is_valid:
-            logger.warning(f"Slack signature verification failed")
-        return is_valid
-    except Exception as e:
-        logger.error(f"Slack signature verification error: {e}")
-        return False
-
+    body = req.get_data()
+    return signature_verifier.is_valid_request(body, req.headers)
 
 
 def save_dealer_to_db(name, phone, address, latitude, longitude, notes):
@@ -497,92 +488,103 @@ def find_closest():
 
 @app.route("/slack/commands", methods=["POST"])
 def slack_commands():
-    if not verify_slack_request(request):
-        return jsonify({"error": "invalid request"}), 403
-
-    command = request.form.get("command")
-    trigger_id = request.form.get("trigger_id")
-    channel_id = request.form.get("channel_id")
-
-    if command != "/add_dealer":
-        return jsonify({"text": "Unsupported command"}), 400
-    if not slack_client:
-        return jsonify({"text": "Slack bot is not configured."}), 500
-
-    view = {
-        "type": "modal",
-        "callback_id": "add_dealer_modal",
-        "title": {"type": "plain_text", "text": "Add Dealer"},
-        "submit": {"type": "plain_text", "text": "Save"},
-        "close": {"type": "plain_text", "text": "Cancel"},
-        "private_metadata": channel_id,
-        "blocks": [
-            {
-                "type": "input",
-                "block_id": "name_block",
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "name_input"
-                },
-                "label": {"type": "plain_text", "text": "Dealer name"}
-            },
-            {
-                "type": "input",
-                "block_id": "phone_block",
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "phone_input"
-                },
-                "label": {"type": "plain_text", "text": "Phone"},
-                "optional": true
-            },
-            {
-                "type": "input",
-                "block_id": "address_block",
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "address_input"
-                },
-                "label": {"type": "plain_text", "text": "Address"}
-            },
-            {
-                "type": "input",
-                "block_id": "latitude_block",
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "latitude_input"
-                },
-                "label": {"type": "plain_text", "text": "Latitude"}
-            },
-            {
-                "type": "input",
-                "block_id": "longitude_block",
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "longitude_input"
-                },
-                "label": {"type": "plain_text", "text": "Longitude"}
-            },
-            {
-                "type": "input",
-                "block_id": "notes_block",
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "notes_input",
-                    "multiline": True
-                },
-                "label": {"type": "plain_text", "text": "Notes"},
-                "optional": true
-            }
-        ]
-    }
-
+    # Slack requires a 200 response within 3 seconds, so return immediately
     try:
-        slack_client.views_open(trigger_id=trigger_id, view=view)
-    except Exception as e:
-        logger.error(f"Failed to open Slack modal: {e}")
-        return jsonify({"text": "Failed to open form."}), 500
+        if not verify_slack_request(request):
+            logger.warning("Slack request verification failed")
+            return "", 200
 
+        command = request.form.get("command")
+        trigger_id = request.form.get("trigger_id")
+        channel_id = request.form.get("channel_id")
+
+        logger.info(f"Slack command received: {command}")
+
+        if command != "/add_dealer":
+            logger.warning(f"Unsupported Slack command: {command}")
+            return "", 200
+        
+        if not slack_client:
+            logger.error("Slack bot client is not configured")
+            return "", 200
+
+        if not trigger_id:
+            logger.error("No trigger_id in Slack request")
+            return "", 200
+
+        view = {
+            "type": "modal",
+            "callback_id": "add_dealer_modal",
+            "title": {"type": "plain_text", "text": "Add Dealer"},
+            "submit": {"type": "plain_text", "text": "Save"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": channel_id or "",
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "name_block",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "name_input"
+                    },
+                    "label": {"type": "plain_text", "text": "Dealer name"}
+                },
+                {
+                    "type": "input",
+                    "block_id": "phone_block",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "phone_input"
+                    },
+                    "label": {"type": "plain_text", "text": "Phone"},
+                    "optional": True
+                },
+                {
+                    "type": "input",
+                    "block_id": "address_block",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "address_input"
+                    },
+                    "label": {"type": "plain_text", "text": "Address"}
+                },
+                {
+                    "type": "input",
+                    "block_id": "latitude_block",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "latitude_input"
+                    },
+                    "label": {"type": "plain_text", "text": "Latitude"}
+                },
+                {
+                    "type": "input",
+                    "block_id": "longitude_block",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "longitude_input"
+                    },
+                    "label": {"type": "plain_text", "text": "Longitude"}
+                },
+                {
+                    "type": "input",
+                    "block_id": "notes_block",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "notes_input",
+                        "multiline": True
+                    },
+                    "label": {"type": "plain_text", "text": "Notes"},
+                    "optional": True
+                }
+            ]
+        }
+
+        slack_client.views_open(trigger_id=trigger_id, view=view)
+        logger.info("Slack modal opened successfully")
+    except Exception as e:
+        logger.error(f"Error in slack_commands: {e}", exc_info=True)
+    
     return "", 200
 
 
