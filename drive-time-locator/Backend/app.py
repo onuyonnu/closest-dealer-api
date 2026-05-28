@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import pandas as pd
+import psycopg
 import requests
 from openrouteservice import Client
 from geopy.geocoders import Nominatim
@@ -18,6 +19,7 @@ logger = logging.getLogger("closest-dealer-api")
 # --- Load environment variables ---
 load_dotenv()
 ORS_API_KEY = os.getenv("ORS_API_KEY")
+DATABASE_URL = os.getenv("DATABASE_URL")
 # ORS_API_KEY is optional now because we use approximate-only mode locally
 
 # --- Flask setup ---
@@ -32,20 +34,53 @@ if ORS_API_KEY:
 else:
     logger.info("ORS API key not found - geocoding fallback disabled")
 
-# --- Load Excel file ---
+# --- Load dealer data ---
 EXCEL_FILE = "locations_with_coords.xlsx"
-try:
-    df = pd.read_excel(EXCEL_FILE)
-except FileNotFoundError:
-    raise FileNotFoundError(f"{EXCEL_FILE} not found in backend folder.")
+
+def get_db_connection():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not configured")
+    return psycopg.connect(DATABASE_URL, autocommit=True)
+
+
+def load_dealer_data():
+    if DATABASE_URL:
+        logger.info("Loading dealer data from Supra SQL database")
+        try:
+            with get_db_connection() as conn:
+                query = """
+                    SELECT
+                        name AS "Name",
+                        phone AS "Phone",
+                        address AS "Address",
+                        latitude AS "Latitude",
+                        longitude AS "Longitude",
+                        notes AS "Notes"
+                    FROM dealers
+                """
+                return pd.read_sql_query(query, conn)
+        except Exception as e:
+            logger.error("Failed to load dealer data from DATABASE_URL: %s", e)
+            raise
+
+    logger.warning("DATABASE_URL not set; falling back to Excel file %s", EXCEL_FILE)
+    try:
+        return pd.read_excel(EXCEL_FILE)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"{EXCEL_FILE} not found in backend folder.")
+
+
+df = load_dealer_data()
 
 required_cols = ["Name", "Latitude", "Longitude"]
 for col in required_cols:
     if col not in df.columns:
-        raise ValueError(f"{col} column missing in {EXCEL_FILE}")
+        raise ValueError(f"{col} column missing in dealer data source")
 
 if "Phone" not in df.columns:
     df["Phone"] = ""
+if "Notes" not in df.columns:
+    df["Notes"] = ""
 
 # --- Haversine ---
 def haversine(lat1, lon1, lat2, lon2):
@@ -68,22 +103,63 @@ last_autocomplete_time = 0
 AUTOCOMPLETE_MIN_INTERVAL = 2.0  # Minimum 2 seconds between autocomplete calls
 
 # Geocoding cache and rate limiting
-geocode_cache = {}
+geocode_cache = {}  # Session-level memory cache for performance
 GEOCODE_CACHE_MAX_SIZE = 1000
 geocode_lock = threading.Lock()
 last_geocode_time = 0
 GEOCODE_MIN_INTERVAL = 1.0  # Minimum 1 second between ORS geocoding calls
 
+
+def get_cached_geocode_from_db(address):
+    """Query the geocode_cache table in Supra for a cached address."""
+    if not DATABASE_URL:
+        return None
+    try:
+        with get_db_connection() as conn:
+            result = conn.execute(
+                "SELECT latitude, longitude FROM geocode_cache WHERE address = %s",
+                (address,)
+            ).fetchone()
+        if result:
+            lat, lon = result
+            return {"lat": lat, "lon": lon, "address": address}
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to query geocode_cache from database: {e}")
+        return None
+
+
+def save_geocode_to_db(address, latitude, longitude):
+    """Save a geocoded address to the geocode_cache table in Supra."""
+    if not DATABASE_URL:
+        return
+    try:
+        with get_db_connection() as conn:
+            conn.execute(
+                "INSERT INTO geocode_cache (address, latitude, longitude) VALUES (%s, %s, %s) ON CONFLICT (address) DO UPDATE SET latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude",
+                (address, latitude, longitude),
+            )
+        logger.info(f"Cached geocode for '{address}' in database")
+    except Exception as e:
+        logger.warning(f"Failed to save geocode to database: {e}")
+
+
 def safe_geocode(query, retries=3, delay=1.0):
-    """Safe geocoding prioritizing Nominatim, with ORS as backup."""
+    """Safe geocoding prioritizing Supra cache, then Nominatim, with ORS as backup."""
     global last_geocode_time
     
-    # Check cache first
+    # Check Supra database cache first
+    cached_db = get_cached_geocode_from_db(query)
+    if cached_db:
+        logger.info(f"Using cached geocoding result from database for '{query}'")
+        return cached_db
+    
+    # Check session memory cache
     cache_key = query.strip().lower()
     with geocode_lock:
         if cache_key in geocode_cache:
             cached_result = geocode_cache[cache_key]
-            logger.info(f"Using cached geocoding result for '{query}'")
+            logger.info(f"Using cached geocoding result from memory for '{query}'")
             return cached_result
 
     # Try Nominatim first
@@ -98,12 +174,9 @@ def safe_geocode(query, retries=3, delay=1.0):
 
         if location:
             result = {'lat': location.latitude, 'lon': location.longitude, 'address': location.address}
-            # Cache the result
+            # Save to database and session cache
+            save_geocode_to_db(query, location.latitude, location.longitude)
             with geocode_lock:
-                if len(geocode_cache) >= GEOCODE_CACHE_MAX_SIZE:
-                    # Remove oldest entry (simple FIFO)
-                    oldest_key = next(iter(geocode_cache))
-                    del geocode_cache[oldest_key]
                 geocode_cache[cache_key] = result
             logger.info(f"Nominatim geocoded '{query}' -> {location.latitude}, {location.longitude}")
             return result
@@ -146,7 +219,8 @@ def safe_geocode(query, retries=3, delay=1.0):
                     lon, lat = feature["geometry"]["coordinates"]
                     address = feature["properties"].get("label")
                     result = {"lat": lat, "lon": lon, "address": address}
-                    # Cache the result
+                    # Save to database and session cache
+                    save_geocode_to_db(query, lat, lon)
                     with geocode_lock:
                         if len(geocode_cache) >= GEOCODE_CACHE_MAX_SIZE:
                             oldest_key = next(iter(geocode_cache))
