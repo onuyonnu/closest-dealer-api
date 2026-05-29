@@ -683,33 +683,10 @@ def open_add_modal(ack, body, client, logger):
                 {
                     "type": "input",
                     "block_id": "phone_block",
-                    "optional": True,
                     "label": {"type": "plain_text", "text": "Phone"},
                     "element": {
                         "type": "plain_text_input",
                         "action_id": "phone_input",
-                        "initial_value": ""
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "latitude_block",
-                    "optional": True,
-                    "label": {"type": "plain_text", "text": "Latitude"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "latitude_input",
-                        "initial_value": ""
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "longitude_block",
-                    "optional": True,
-                    "label": {"type": "plain_text", "text": "Longitude"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "longitude_input",
                         "initial_value": ""
                     }
                 },
@@ -792,8 +769,6 @@ def handle_add_dealer_modal_submission(ack, body, client, logger):
     name = safe_view_value(values, "name_block", "name_input")
     phone = safe_view_value(values, "phone_block", "phone_input")
     address = safe_view_value(values, "address_block", "address_input")
-    latitude = safe_view_value(values, "latitude_block", "latitude_input")
-    longitude = safe_view_value(values, "longitude_block", "longitude_input")
     notes = safe_view_value(values, "notes_block", "notes_input")
 
     errors = {}
@@ -922,34 +897,11 @@ def handle_dealer_select(ack, body, client, logger):
                 {
                     "type": "input",
                     "block_id": "phone_block",
-                    "optional": True,
                     "label": {"type": "plain_text", "text": "Phone"},
                     "element": {
                         "type": "plain_text_input",
                         "action_id": "phone_input",
                         "initial_value": slack_str(dealer.get("phone"))
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "latitude_block",
-                    "optional": True,
-                    "label": {"type": "plain_text", "text": "Latitude"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "latitude_input",
-                        "initial_value": slack_str(dealer.get("latitude"))
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "longitude_block",
-                    "optional": True,
-                    "label": {"type": "plain_text", "text": "Longitude"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "longitude_input",
-                        "initial_value": slack_str(dealer.get("longitude"))
                     }
                 },
                 {
@@ -976,8 +928,6 @@ def handle_dealer_edit_submission(ack, body, client, logger):
     name = safe_view_value(values, "name_block", "name_input")
     phone = safe_view_value(values, "phone_block", "phone_input")
     address = safe_view_value(values, "address_block", "address_input")
-    latitude = safe_view_value(values, "latitude_block", "latitude_input")
-    longitude = safe_view_value(values, "longitude_block", "longitude_input")
     notes = safe_view_value(values, "notes_block", "notes_input")
 
     errors = {}
