@@ -367,7 +367,7 @@ def safe_geocode(query, retries=3, delay=1.0):
             "text": query,
             "size": 1,
         }
-        url = "https://api.heigit.org/pelias/v1/search
+        url = "https://api.heigit.org/pelias/v1/search"
 
         for attempt in range(retries):
             try:
