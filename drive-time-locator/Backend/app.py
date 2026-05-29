@@ -367,7 +367,7 @@ def safe_geocode(query, retries=3, delay=1.0):
             "text": query,
             "size": 1,
         }
-        url = "https://api.openrouteservice.org/geocode/search"
+        url = "/api.heigit.org/geocode/search"
 
         for attempt in range(retries):
             try:
@@ -446,7 +446,7 @@ def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
         "text": query,
         "size": limit * 2,  # Request more to account for filtering
     }
-    url = "https://api.openrouteservice.org/geocode/autocomplete"
+    url = "/api.heigit.org/geocode/autocomplete"
 
     for attempt in range(retries):
         try:
@@ -781,18 +781,6 @@ def handle_add_dealer_modal_submission(ack, body, client, logger):
     latitude_value = None
     longitude_value = None
 
-    if latitude:
-        try:
-            latitude_value = float(latitude)
-        except ValueError:
-            errors["latitude_block"] = "Latitude must be a valid number."
-
-    if longitude:
-        try:
-            longitude_value = float(longitude)
-        except ValueError:
-            errors["longitude_block"] = "Longitude must be a valid number."
-
     if errors:
         ack(response_action="errors", errors=errors)
         return
@@ -940,17 +928,6 @@ def handle_dealer_edit_submission(ack, body, client, logger):
     latitude_value = None
     longitude_value = None
 
-    if latitude:
-        try:
-            latitude_value = float(latitude)
-        except ValueError:
-            errors["latitude_block"] = "Latitude must be a valid number."
-
-    if longitude:
-        try:
-            longitude_value = float(longitude)
-        except ValueError:
-            errors["longitude_block"] = "Longitude must be a valid number."
 
     if errors:
         ack(response_action="errors", errors=errors)
