@@ -446,7 +446,7 @@ def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
         "text": query,
         "size": limit * 2,  # Request more to account for filtering
     }
-    url = "https://api.heigit.org/geocode/autocomplete"
+    url = "https://api.heigit.org/pelias/v1/autocomplete"
 
     for attempt in range(retries):
         try:
