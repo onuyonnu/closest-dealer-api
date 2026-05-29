@@ -513,6 +513,27 @@ def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
 
     return []
 
+def slack_str(value):
+    """
+    Slack plain_text_input initial_value must always be a string.
+    None -> ""
+    numbers -> "123.45"
+    """
+    if value is None:
+        return ""
+    return str(value)
+
+
+def safe_view_value(values, block_id, action_id):
+    """
+    Safely read a value from Slack modal submission state.
+    Always returns a stripped string.
+    """
+    try:
+        return (values.get(block_id, {}).get(action_id, {}).get("value") or "").strip()
+    except Exception:
+        return ""
+
 
 # --- Routes ---
 @app.route("/")
@@ -611,22 +632,23 @@ def find_closest():
     return jsonify(final_results)
 
 
-@app.route("/slack/commands", methods=["POST"])
 @app.route("/slack/events", methods=["POST"])
 @app.route("/slack/interactions", methods=["POST"])
+@app.route("/slack/commands", methods=["POST"])
 def slack_events():
     return handler.handle(request)
+
 
 
 @slack_app.command("/add_dealer")
 def open_add_modal(ack, body, client, logger):
     channel_id = body.get("channel_id")
+
     if channel_id not in ALLOWED_CHANNELS:
         ack("🚫 This command can only be used in #dealer-finder.")
         return
 
     ack()
-    logger.info("Slash command /add_dealer received")
 
     client.views_open(
         trigger_id=body["trigger_id"],
@@ -636,7 +658,7 @@ def open_add_modal(ack, body, client, logger):
             "title": {"type": "plain_text", "text": "Add Dealer"},
             "submit": {"type": "plain_text", "text": "Submit"},
             "close": {"type": "plain_text", "text": "Cancel"},
-            "private_metadata": json.dumps({"channel_id": body.get("channel_id")}),
+            "private_metadata": channel_id or "",
             "blocks": [
                 {
                     "type": "input",
@@ -644,7 +666,8 @@ def open_add_modal(ack, body, client, logger):
                     "label": {"type": "plain_text", "text": "Dealer Name"},
                     "element": {
                         "type": "plain_text_input",
-                        "action_id": "name_input"
+                        "action_id": "name_input",
+                        "initial_value": ""
                     }
                 },
                 {
@@ -653,16 +676,41 @@ def open_add_modal(ack, body, client, logger):
                     "label": {"type": "plain_text", "text": "Address"},
                     "element": {
                         "type": "plain_text_input",
-                        "action_id": "address_input"
+                        "action_id": "address_input",
+                        "initial_value": ""
                     }
                 },
                 {
                     "type": "input",
                     "block_id": "phone_block",
+                    "optional": True,
                     "label": {"type": "plain_text", "text": "Phone"},
                     "element": {
                         "type": "plain_text_input",
-                        "action_id": "phone_input"
+                        "action_id": "phone_input",
+                        "initial_value": ""
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "latitude_block",
+                    "optional": True,
+                    "label": {"type": "plain_text", "text": "Latitude"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "latitude_input",
+                        "initial_value": ""
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "longitude_block",
+                    "optional": True,
+                    "label": {"type": "plain_text", "text": "Longitude"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "longitude_input",
+                        "initial_value": ""
                     }
                 },
                 {
@@ -673,13 +721,13 @@ def open_add_modal(ack, body, client, logger):
                     "element": {
                         "type": "plain_text_input",
                         "action_id": "notes_input",
-                        "multiline": True
+                        "multiline": True,
+                        "initial_value": ""
                     }
                 }
             ]
         }
     )
-
 
 
 
@@ -740,106 +788,116 @@ def open_dealer_edit_modal(ack, body, client, logger):
 @slack_app.view("add_dealer_modal")
 def handle_add_dealer_modal_submission(ack, body, client, logger):
     values = body["view"]["state"]["values"]
-    name = values["name_block"]["name_input"].get("value", "") or ""
-    phone = values["phone_block"]["phone_input"].get("value", "") or ""
-    address = values["address_block"]["address_input"].get("value", "") or ""
-    notes = values["notes_block"]["notes_input"].get("value", "") or ""
 
-    name = name.strip()
-    phone = phone.strip()
-    address = address.strip()
-    notes = notes.strip()
+    name = safe_view_value(values, "name_block", "name_input")
+    phone = safe_view_value(values, "phone_block", "phone_input")
+    address = safe_view_value(values, "address_block", "address_input")
+    latitude = safe_view_value(values, "latitude_block", "latitude_input")
+    longitude = safe_view_value(values, "longitude_block", "longitude_input")
+    notes = safe_view_value(values, "notes_block", "notes_input")
 
     errors = {}
+
     if not name:
         errors["name_block"] = "Dealer name is required."
     if not address:
         errors["address_block"] = "Address is required."
 
+    latitude_value = None
+    longitude_value = None
+
+    if latitude:
+        try:
+            latitude_value = float(latitude)
+        except ValueError:
+            errors["latitude_block"] = "Latitude must be a valid number."
+
+    if longitude:
+        try:
+            longitude_value = float(longitude)
+        except ValueError:
+            errors["longitude_block"] = "Longitude must be a valid number."
+
     if errors:
         ack(response_action="errors", errors=errors)
         return
 
-    ack()
-
     try:
-        save_dealer_to_db(name, phone, address, notes=notes)
-        metadata = json.loads(body["view"].get("private_metadata", "{}"))
-        channel_id = metadata.get("channel_id")
-        user_id = body["user"]["id"]
-        public_text = (
-            f":white_check_mark: Dealer *{name}* added by <@{user_id}>.\n"
-            f"*Address:* {address}\n"
-            f"*Phone:* {phone or 'N/A'}"
+        save_dealer_to_db(
+            name=name,
+            phone=phone,
+            address=address,
+            notes=notes,
+            latitude=latitude_value,
+            longitude=longitude_value
         )
-        if notes:
-            public_text += f"\n*Notes:* {notes}"
-        send_slack_feedback(
-            client,
-            channel_id,
-            user_id,
-            public_text,
-            private_text=f"Dealer *{name}* was added successfully."
-        )
+        refresh_dealer_data()
+        ack()
     except Exception as e:
-        logger.error(f"Failed to save dealer '{name}': {e}")
-        user_id = body["user"]["id"]
-        channel_id = json.loads(body["view"].get("private_metadata", "{}")).get("channel_id")
-        try:
-            client.chat_postEphemeral(
-                channel=channel_id or user_id,
-                user=user_id,
-                text=f"Unable to add dealer *{name}*. Please try again later."
-            )
-        except Exception as err:
-            logger.error(f"Failed to send failure notification for add dealer: {err}")
-
+        logger.exception("Error saving dealer from Slack modal")
+        ack(
+            response_action="update",
+            view={
+                "type": "modal",
+                "title": {"type": "plain_text", "text": "Save Failed"},
+                "close": {"type": "plain_text", "text": "Close"},
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"❌ Could not save dealer.\n`{str(e)}`"
+                        }
+                    }
+                ]
+            }
+        )
 @slack_app.view("dealer_edit_select")
 def handle_dealer_select(ack, body, client, logger):
-    # Acknowledge immediately with a lightweight loading view to avoid Slack timeouts
     values = body["view"]["state"]["values"]
-    selected = values["dealer_select_block"]["dealer_select"].get("selected_option")
+    selected = values.get("dealer_select_block", {}).get("dealer_select", {}).get("selected_option")
+
     if not selected:
-        ack(response_action="errors", errors={"dealer_select_block": "Please choose a dealer to edit."})
+        ack(
+            response_action="errors",
+            errors={"dealer_select_block": "Please choose a dealer to edit."}
+        )
         return
 
     dealer_id = selected["value"]
+    dealer = get_dealer_by_id(dealer_id)
 
-    # Immediate ack with a loading/update to keep Slack happy
-    try:
-        ack(response_action="update", view={
+    if not dealer:
+        ack(
+            response_action="update",
+            view={
+                "type": "modal",
+                "title": {"type": "plain_text", "text": "Dealer Not Found"},
+                "close": {"type": "plain_text", "text": "Close"},
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "❌ The selected dealer could not be found."
+                        }
+                    }
+                ]
+            }
+        )
+        return
+
+    # Acknowledge with update instead of opening a second modal call
+    # This avoids extra timing issues and keeps the same modal flow
+    ack(
+        response_action="update",
+        view={
             "type": "modal",
             "callback_id": "dealer_edit_modal",
             "title": {"type": "plain_text", "text": "Edit Dealer"},
             "submit": {"type": "plain_text", "text": "Save"},
             "close": {"type": "plain_text", "text": "Cancel"},
-            "blocks": [
-                {"type": "section", "text": {"type": "mrkdwn", "text": "Fetching dealer details..."}}
-            ]
-        })
-    except Exception:
-        # If ack/update fails, still continue to attempt fetching and notify via DM
-        logger.exception("Initial ack/update failed for dealer_edit_select")
-
-    # Now fetch dealer details and replace the view with the populated form
-    try:
-        dealer = get_dealer_by_id(dealer_id)
-        if not dealer:
-            user_id = body["user"]["id"]
-            channel_id = json.loads(body["view"].get("private_metadata", "{}") or "{}").get("channel_id")
-            client.chat_postEphemeral(channel=channel_id or user_id, user=user_id, text="Selected dealer could not be found.")
-            return
-
-        metadata = json.loads(body["view"].get("private_metadata", "{}") or "{}")
-        channel_id = metadata.get("channel_id")
-
-        populated_view = {
-            "type": "modal",
-            "callback_id": "dealer_edit_modal",
-            "title": {"type": "plain_text", "text": "Edit Dealer"},
-            "submit": {"type": "plain_text", "text": "Save"},
-            "close": {"type": "plain_text", "text": "Cancel"},
-            "private_metadata": json.dumps({"channel_id": channel_id, "dealer_id": dealer_id}),
+            "private_metadata": dealer_id,
             "blocks": [
                 {
                     "type": "input",
@@ -848,7 +906,7 @@ def handle_dealer_select(ack, body, client, logger):
                     "element": {
                         "type": "plain_text_input",
                         "action_id": "name_input",
-                        "initial_value": dealer["name"]
+                        "initial_value": slack_str(dealer.get("name"))
                     }
                 },
                 {
@@ -858,17 +916,40 @@ def handle_dealer_select(ack, body, client, logger):
                     "element": {
                         "type": "plain_text_input",
                         "action_id": "address_input",
-                        "initial_value": dealer.get("address", "")
+                        "initial_value": slack_str(dealer.get("address"))
                     }
                 },
                 {
                     "type": "input",
                     "block_id": "phone_block",
+                    "optional": True,
                     "label": {"type": "plain_text", "text": "Phone"},
                     "element": {
                         "type": "plain_text_input",
                         "action_id": "phone_input",
-                        "initial_value": dealer.get("phone", "")
+                        "initial_value": slack_str(dealer.get("phone"))
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "latitude_block",
+                    "optional": True,
+                    "label": {"type": "plain_text", "text": "Latitude"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "latitude_input",
+                        "initial_value": slack_str(dealer.get("latitude"))
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "longitude_block",
+                    "optional": True,
+                    "label": {"type": "plain_text", "text": "Longitude"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "longitude_input",
+                        "initial_value": slack_str(dealer.get("longitude"))
                     }
                 },
                 {
@@ -880,91 +961,82 @@ def handle_dealer_select(ack, body, client, logger):
                         "type": "plain_text_input",
                         "action_id": "notes_input",
                         "multiline": True,
-                        "initial_value": dealer.get("notes", "")
+                        "initial_value": slack_str(dealer.get("notes"))
                     }
                 }
             ]
         }
-
-        # Replace the current view with the populated form
-        try:
-            client.views_update(view_id=body["view"]["id"], view=populated_view)
-        except Exception:
-            # If views_update fails, fall back to opening a new modal via views_open
-            logger.exception("views_update failed; trying views_open fallback")
-            client.views_open(trigger_id=body["trigger_id"], view=populated_view)
-    except Exception:
-        logger.exception("Error while fetching dealer details for modal")
-
+    )
 
 @slack_app.view("dealer_edit_modal")
 def handle_dealer_edit_submission(ack, body, client, logger):
     values = body["view"]["state"]["values"]
-    name = values["name_block"]["name_input"]["value"].strip()
-    address = values["address_block"]["address_input"]["value"].strip()
-    phone = values["phone_block"]["phone_input"]["value"].strip()
-    notes = values["notes_block"]["notes_input"]["value"].strip()
+    dealer_id = body["view"].get("private_metadata")
 
-    metadata = json.loads(body["view"].get("private_metadata", "{}"))
-    dealer_id = metadata.get("dealer_id")
-    channel_id = metadata.get("channel_id")
+    name = safe_view_value(values, "name_block", "name_input")
+    phone = safe_view_value(values, "phone_block", "phone_input")
+    address = safe_view_value(values, "address_block", "address_input")
+    latitude = safe_view_value(values, "latitude_block", "latitude_input")
+    longitude = safe_view_value(values, "longitude_block", "longitude_input")
+    notes = safe_view_value(values, "notes_block", "notes_input")
 
     errors = {}
+
     if not name:
         errors["name_block"] = "Dealer name is required."
     if not address:
         errors["address_block"] = "Address is required."
+
+    latitude_value = None
+    longitude_value = None
+
+    if latitude:
+        try:
+            latitude_value = float(latitude)
+        except ValueError:
+            errors["latitude_block"] = "Latitude must be a valid number."
+
+    if longitude:
+        try:
+            longitude_value = float(longitude)
+        except ValueError:
+            errors["longitude_block"] = "Longitude must be a valid number."
 
     if errors:
         ack(response_action="errors", errors=errors)
         return
 
     try:
-        existing_dealer = get_dealer_by_id(dealer_id)
-        if not existing_dealer:
-            ack(response_action="errors", errors={"dealer_select_block": "Dealer not found."})
-            return
-
-        if existing_dealer.get("address", "").strip() != address.strip():
-            location = safe_geocode(address)
-            if not location:
-                ack(response_action="errors", errors={"address_block": "Unable to geocode the new address. Please verify it."})
-                return
-            latitude, longitude = location["lat"], location["lon"]
-        else:
-            latitude = existing_dealer.get("latitude")
-            longitude = existing_dealer.get("longitude")
-
+        update_dealer(
+            dealer_id=dealer_id,
+            name=name,
+            phone=phone,
+            address=address,
+            notes=notes,
+            latitude=latitude_value,
+            longitude=longitude_value
+        )
+        refresh_dealer_data()
         ack()
-        update_dealer(dealer_id, name, phone, address, notes=notes, latitude=latitude, longitude=longitude)
-        user_id = body["user"]["id"]
-        public_text = (
-            f":pencil2: Dealer *{name}* updated by <@{user_id}>.\n"
-            f"*Address:* {address}\n"
-            f"*Phone:* {phone or 'N/A'}"
-        )
-        if notes:
-            public_text += f"\n*Notes:* {notes}"
-        send_slack_feedback(
-            client,
-            channel_id,
-            user_id,
-            public_text,
-            private_text=f"Dealer *{name}* was updated successfully."
-        )
     except Exception as e:
-        logger.error(f"Failed to update dealer '{name}' ({dealer_id}): {e}")
-        user_id = body["user"]["id"]
-        try:
-            client.chat_postEphemeral(
-                channel=channel_id or user_id,
-                user=user_id,
-                text=f"Unable to update dealer *{name}*. Please try again later."
-            )
-        except Exception as err:
-            logger.error(f"Failed to send failure notification for edit dealer: {err}")
-
-
+        logger.exception("Error updating dealer from Slack modal")
+        ack(
+            response_action="update",
+            view={
+                "type": "modal",
+                "title": {"type": "plain_text", "text": "Update Failed"},
+                "close": {"type": "plain_text", "text": "Close"},
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"❌ Could not update dealer.\n`{str(e)}`"
+                        }
+                    }
+                ]
+            }
+        )
 @app.route("/autocomplete", methods=["GET"])
 def autocomplete():
     global last_autocomplete_time
