@@ -367,7 +367,7 @@ def safe_geocode(query, retries=3, delay=1.0):
             "text": query,
             "size": 1,
         }
-        url = "/api.heigit.org/geocode/search"
+        url = "https://api.heigit.org/geocode/search"
 
         for attempt in range(retries):
             try:
@@ -446,7 +446,7 @@ def ors_autocomplete(query, retries=3, delay=1.0, limit=5):
         "text": query,
         "size": limit * 2,  # Request more to account for filtering
     }
-    url = "/api.heigit.org/geocode/autocomplete"
+    url = "https://api.heigit.org/geocode/autocomplete"
 
     for attempt in range(retries):
         try:
