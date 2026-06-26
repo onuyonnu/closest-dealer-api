@@ -795,6 +795,14 @@ def handle_add_dealer_modal_submission(ack, body, client, logger):
             longitude=longitude_value
         )
         refresh_dealer_data()
+        
+        # Send Slack feedback
+        channel_id = body["view"].get("private_metadata") or ""
+        user_id = body["user"]["id"]
+        user_name = body["user"].get("username", "User")
+        public_text = f"✅ New dealer added by <@{user_id}>: **{name}**"
+        send_slack_feedback(client, channel_id, user_id, public_text)
+        
         ack()
     except Exception as e:
         logger.exception("Error saving dealer from Slack modal")
@@ -852,6 +860,15 @@ def handle_dealer_select(ack, body, client, logger):
 
     # Acknowledge with update instead of opening a second modal call
     # This avoids extra timing issues and keeps the same modal flow
+    # Preserve channel_id in private_metadata as JSON
+    try:
+        prev_metadata = json.loads(body["view"].get("private_metadata", "{}"))
+        channel_id = prev_metadata.get("channel_id", "")
+    except:
+        channel_id = ""
+    
+    edit_metadata = json.dumps({"dealer_id": dealer_id, "channel_id": channel_id})
+    
     ack(
         response_action="update",
         view={
@@ -860,7 +877,7 @@ def handle_dealer_select(ack, body, client, logger):
             "title": {"type": "plain_text", "text": "Edit Dealer"},
             "submit": {"type": "plain_text", "text": "Save"},
             "close": {"type": "plain_text", "text": "Cancel"},
-            "private_metadata": dealer_id,
+            "private_metadata": edit_metadata,
             "blocks": [
                 {
                     "type": "input",
@@ -911,7 +928,15 @@ def handle_dealer_select(ack, body, client, logger):
 @slack_app.view("dealer_edit_modal")
 def handle_dealer_edit_submission(ack, body, client, logger):
     values = body["view"]["state"]["values"]
-    dealer_id = body["view"].get("private_metadata")
+    
+    # Extract dealer_id and channel_id from private_metadata
+    try:
+        metadata = json.loads(body["view"].get("private_metadata", "{}"))
+        dealer_id = metadata.get("dealer_id")
+        channel_id = metadata.get("channel_id", "")
+    except:
+        dealer_id = body["view"].get("private_metadata")
+        channel_id = ""
 
     name = safe_view_value(values, "name_block", "name_input")
     phone = safe_view_value(values, "phone_block", "phone_input")
@@ -944,6 +969,13 @@ def handle_dealer_edit_submission(ack, body, client, logger):
             longitude=longitude_value
         )
         refresh_dealer_data()
+        
+        # Send Slack feedback
+        user_id = body["user"]["id"]
+        user_name = body["user"].get("username", "User")
+        public_text = f"✅ Dealer updated by <@{user_id}>: **{name}**"
+        send_slack_feedback(client, channel_id, user_id, public_text)
+        
         ack()
     except Exception as e:
         logger.exception("Error updating dealer from Slack modal")
