@@ -800,7 +800,13 @@ def handle_add_dealer_modal_submission(ack, body, client, logger):
         channel_id = body["view"].get("private_metadata") or ""
         user_id = body["user"]["id"]
         user_name = body["user"].get("username", "User")
-        public_text = f"✅ New dealer added by <@{user_id}>: **{name}**"
+        public_text = (
+            f":white_check_mark: Dealer *{name}* added by <@{user_id}>.\n"
+            f"*Address:* {address}\n"
+            f"*Phone:* {phone or 'N/A'}"
+        )
+        if notes:
+            public_text += f"\n*Notes:* {notes}"
         send_slack_feedback(client, channel_id, user_id, public_text)
         
         ack()
@@ -973,9 +979,14 @@ def handle_dealer_edit_submission(ack, body, client, logger):
         # Send Slack feedback
         user_id = body["user"]["id"]
         user_name = body["user"].get("username", "User")
-        public_text = f"✅ Dealer updated by <@{user_id}>: **{name}**"
-        send_slack_feedback(client, channel_id, user_id, public_text)
-        
+        public_text = (
+            f":white_check_mark: Dealer *{name}* added by <@{user_id}>.\n"
+            f"*Address:* {address}\n"
+            f"*Phone:* {phone or 'N/A'}"
+        )
+        if notes:
+            public_text += f"\n*Notes:* {notes}"
+
         ack()
     except Exception as e:
         logger.exception("Error updating dealer from Slack modal")
