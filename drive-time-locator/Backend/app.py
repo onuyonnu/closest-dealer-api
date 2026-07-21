@@ -180,19 +180,48 @@ def verify_slack_request(req):
     return signature_verifier.is_valid_request(body, req.headers)
 
 
-def post_slack_channel_message(client, channel_id, text):
+def post_slack_channel_message(client, channel_id, text, blocks=None):
     if not channel_id:
         return
     try:
-        client.chat_postMessage(channel=channel_id, text=text)
+        kwargs = {"channel": channel_id, "text": text}
+        if blocks:
+            kwargs["blocks"] = blocks
+        client.chat_postMessage(**kwargs)
     except Exception as e:
         logger.warning(f"Slack public channel message failed for channel {channel_id}: {e}")
 
 
-def send_slack_feedback(client, channel_id, user_id, public_text, private_text=None):
+def format_dealer_message_blocks(dealer_name, address, phone, notes, user_id, action="updated"):
+    """
+    Format a dealer message as Slack blocks for rich formatting.
+    action: "added" or "updated"
+    """
+    text = f"Dealer *{dealer_name}* {action} by <@{user_id}>\n\n"
+    text += f"*Address:* {address}\n"
+    
+    if phone:
+        text += f"*Phone:* <tel:{phone}|{phone}>\n"
+    
+    if notes:
+        text += f"*Notes:* {notes}"
+    
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": text
+            }
+        }
+    ]
+
+
+
+def send_slack_feedback(client, channel_id, user_id, public_text, private_text=None, blocks=None):
     """Post a public channel message and send a private confirmation to the user."""
     if channel_id:
-        post_slack_channel_message(client, channel_id, public_text)
+        post_slack_channel_message(client, channel_id, public_text, blocks=blocks)
 
     if private_text is None:
         private_text = "Your change was recorded successfully."
@@ -799,7 +828,16 @@ def handle_add_dealer_modal_submission(ack, body, client, logger):
         # Send Slack feedback
         channel_id = body["view"].get("private_metadata") or ""
         user_id = body["user"]["id"]
-        user_name = body["user"].get("username", "User")
+        
+        # Format message as blocks
+        blocks = format_dealer_message_blocks(
+            dealer_name=name,
+            address=address,
+            phone=phone,
+            notes=notes,
+            user_id=user_id,
+            action="added by"
+        )
         public_text = (
             f":white_check_mark: Dealer *{name}* added by <@{user_id}>.\n"
             f"*Address:* {address}\n"
@@ -807,7 +845,8 @@ def handle_add_dealer_modal_submission(ack, body, client, logger):
         )
         if notes:
             public_text += f"\n*Notes:* {notes}"
-        send_slack_feedback(client, channel_id, user_id, public_text)
+        
+        send_slack_feedback(client, channel_id, user_id, public_text, blocks=blocks)
         
         ack()
     except Exception as e:
@@ -980,7 +1019,7 @@ def handle_dealer_edit_submission(ack, body, client, logger):
         user_id = body["user"]["id"]
         user_name = body["user"].get("username", "User")
         public_text = (
-            f":white_check_mark: Dealer *{name}* added by <@{user_id}>.\n"
+            f":pencil2: Dealer *{name}* updated by <@{user_id}>.\n"
             f"*Address:* {address}\n"
             f"*Phone:* {phone or 'N/A'}"
         )
