@@ -71,21 +71,21 @@
   <div class="faq">
     <h3>ℹ️ About this tool</h3>
     <p><b>Created by:</b> Olivier</p>
-    <p>This tool helps you find the closest dealer locations by drive time.</p>
+    <p>Enter an address or ZIP code to find dealers near you.</p>
     <ul>
-      <li>The backend now runs on Flask + PostgreSQL and supports Slack slash commands for managing dealers.</li>
-      <li>New Slack flows: <code>/add_dealer</code> and <code>/dealer_edit</code> open modals for dealer creation and updates this is available to a specific channel only.</li>
-      <li>Edited dealers refresh coordinates when the address changes, and all changes are saved to the database.</li>
-      <li>Slack now posts public channel updates showing who added or edited a dealer and what changed.</li>
-      <li>Geocoding uses Nominatim first, then OpenRouteService as a fallback, with caching in the database and memory.</li>
-      <li>Auto-complete is still US-only, and drive-time results are approximate.</li>
-      <li>The app is more stable and now centralizes dealer data in the database instead of static Excel only, searches are saved for future use as well.</li>
+      <li>Searches show the closest available dealer locations and their contact information.</li>
+      <li>If a dealer serves several areas with the same phone number, only the location closest to you is shown.</li>
+      <li>Address suggestions are available for U.S. locations.</li>
+      <li>Travel times and distances are estimates and may vary with traffic and road conditions.</li>
+      <li>Only dealers within a 200-mile radius are displayed.</li>
+      <li>There are now 52 unique dealers available in the system.</li>
     </ul>
   </div>
 
   <details>
     <summary>Changelog</summary>
     <ul>
+      <li><b>Latest</b> - Results now show only the closest location when multiple dealer listings share the same phone number. As well as limit the dealers to only show one's within 200 miles.</li>
       <li><b>Latest</b> - Added Slack dealer management support with public channel notifications and private confirmation.</li>
       <li><b>Latest</b> - Added <code>/dealer_edit</code> flow to select, edit, and update existing dealers.</li>
       <li><b>Latest</b> - Saved dealer edits now re-geocode updated addresses and store fresh latitude/longitude.</li>
