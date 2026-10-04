@@ -620,7 +620,7 @@ def find_closest():
         approx_miles = approx_km * 0.621371
         approx_time_min = approx_km / 80 * 60
 
-        if approx_miles > 500:
+        if approx_miles > 200:
             skipped_summaries.append(f"{row['Name']}: too far ({approx_miles:.1f} mi)")
             continue
 

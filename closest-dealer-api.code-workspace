@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"name": "closest-dealer-api",
+			"path": "."
+		}
+	],
+	"settings": {
+		"python.terminal.useEnvFile": true
+	}
+}
