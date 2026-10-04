@@ -121,6 +121,33 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
+
+def normalize_phone(phone):
+    """Return digits only so equivalent formatted phone numbers compare equally."""
+    if pd.isna(phone):
+        return ""
+    return "".join(character for character in str(phone) if character.isdigit())
+
+
+def select_unique_phone_candidates(distance_df, limit=50):
+    """Keep the closest location for each populated phone number."""
+    selected_indexes = []
+    seen_phones = set()
+
+    for index, row in distance_df.sort_values("approx_distance").iterrows():
+        phone_key = normalize_phone(row.get("Phone", ""))
+        if phone_key:
+            if phone_key in seen_phones:
+                continue
+            seen_phones.add(phone_key)
+
+        selected_indexes.append(index)
+        if len(selected_indexes) == limit:
+            break
+
+    return distance_df.loc[selected_indexes]
+
+
 # --- Geocoding with ORS ---
 # North America bounding box: [min_lon, min_lat, max_lon, max_lat]
 # Extended to include Caribbean territories like Puerto Rico
@@ -596,8 +623,8 @@ def find_closest():
         )
     )
 
-    # Step 2: choose nearest candidates by approx distance
-    candidates = distance_df.sort_values("approx_distance").head(50)
+    # Step 2: choose nearest candidates, keeping only the closest location per phone number.
+    candidates = select_unique_phone_candidates(distance_df)
 
     results = []
     accepted_summaries = []
