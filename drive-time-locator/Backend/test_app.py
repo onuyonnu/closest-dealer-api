@@ -7,6 +7,7 @@ from slack_bolt import App as SlackBoltApp
 
 os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-test-token")
 os.environ.setdefault("SLACK_SIGNING_SECRET", "test-signing-secret")
+os.environ["DATABASE_URL"] = ""
 
 
 class TestSlackBoltApp(SlackBoltApp):
